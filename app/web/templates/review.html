@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Review — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3">
+  <h5 class="mb-0">Low-confidence unlabelled passes <span class="badge bg-secondary">{{ total }}</span></h5>
+  <span class="text-muted small">(confidence ≤ 40%, no label)</span>
+</div>
+
+<div class="table-responsive">
+<table class="table table-hover table-sm align-middle">
+  <thead class="table-dark">
+    <tr>
+      <th>Thumb</th>
+      <th>Time</th>
+      <th>Speed</th>
+      <th>Conf</th>
+      <th>Frames</th>
+      <th>Speed CV</th>
+      <th>ID sw</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in passes %}
+  <tr>
+    <td class="thumb">
+      {% if p.entry_frame_path %}
+      <a href="/session/{{ p.session_id }}">
+        <img src="/{{ p.entry_frame_path }}" alt="entry" loading="lazy"
+             onerror="this.outerHTML='<span class=text-muted>—</span>'">
+      </a>
+      {% else %}—{% endif %}
+    </td>
+    <td class="text-nowrap small">{{ fmt_ts(p.start_ts) }}</td>
+    <td><span class="fw-bold text-info">{{ fmt_mph(p.sw_speed_mph) }}</span> mph</td>
+    <td>
+      <span class="conf-badge bg-{{ confidence_class(p.confidence) }}">
+        {{ "%.0f"|format(p.confidence * 100) }}%
+      </span>
+    </td>
+    <td class="small">{{ p.frames_in_zone }}</td>
+    <td class="small">{{ "%.2f"|format(p.per_frame_speed_cv) }}</td>
+    <td class="small">{{ p.id_switches }}</td>
+    <td><a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0">View</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="text-center text-muted py-4">No low-confidence passes to review.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if total > limit %}
+<nav><ul class="pagination pagination-sm">
+  {% if page > 1 %}
+  <li class="page-item"><a class="page-link" href="/review?page={{ page-1 }}">‹ Prev</a></li>
+  {% endif %}
+  <li class="page-item disabled"><span class="page-link">{{ page }} / {{ ((total-1)//limit)+1 }}</span></li>
+  {% if page * limit < total %}
+  <li class="page-item"><a class="page-link" href="/review?page={{ page+1 }}">Next ›</a></li>
+  {% endif %}
+</ul></nav>
+{% endif %}
+{% endblock %}

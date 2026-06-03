@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Speedwatch — Passes{% endblock %}
+
+{% block content %}
+<div class="row mb-3 align-items-end g-2">
+  <div class="col-auto">
+    <h5 class="mb-0">
+      Passes <span class="badge bg-secondary">{{ total }}</span>
+    </h5>
+  </div>
+
+  {% if not has_calibration %}
+  <div class="col-12">
+    <div class="alert alert-warning py-2 mb-0">
+      No active calibration set up yet.
+      <a href="/calibrate">Set up calibration</a> before the pipeline runs.
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="col">
+    <form class="d-flex gap-2 flex-wrap" method="get" action="/">
+      <select name="order_by" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
+        <option value="created_at"  {% if order_by=='created_at'  %}selected{% endif %}>Sort: Newest</option>
+        <option value="sw_speed_mph"{% if order_by=='sw_speed_mph'%}selected{% endif %}>Sort: Speed ↓</option>
+        <option value="confidence"  {% if order_by=='confidence'  %}selected{% endif %}>Sort: Low confidence</option>
+      </select>
+      <select name="label" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
+        <option value="" {% if not label_filter %}selected{% endif %}>All labels</option>
+        <option value="sw_ok"    {% if label_filter=='sw_ok'    %}selected{% endif %}>✅ OK</option>
+        <option value="sw_wrong" {% if label_filter=='sw_wrong' %}selected{% endif %}>❌ Wrong</option>
+        <option value="unsure"   {% if label_filter=='unsure'   %}selected{% endif %}>❓ Unsure</option>
+      </select>
+      <button class="btn btn-sm btn-outline-info">Filter</button>
+    </form>
+  </div>
+  <div class="col-auto ms-auto d-flex gap-2 align-items-center">
+    <span class="text-muted small">{{ pipeline_status }}</span>
+  </div>
+</div>
+
+<div class="table-responsive">
+<table class="table table-hover table-sm align-middle">
+  <thead class="table-dark">
+    <tr>
+      <th>Thumb</th>
+      <th>Time</th>
+      <th>Speed</th>
+      <th>Plate</th>
+      <th>Conf</th>
+      <th>Frames</th>
+      <th>Dwell</th>
+      <th>Label</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in passes %}
+  <tr>
+    <td class="thumb">
+      {% if p.trajectory_overlay_path %}
+      <a href="/session/{{ p.session_id }}">
+        <img src="/{{ p.trajectory_overlay_path }}" alt="traj" loading="lazy"
+             onerror="this.outerHTML='<span class=text-muted>—</span>'">
+      </a>
+      {% elif p.entry_frame_path %}
+      <a href="/session/{{ p.session_id }}">
+        <img src="/{{ p.entry_frame_path }}" alt="entry" loading="lazy"
+             onerror="this.outerHTML='<span class=text-muted>—</span>'">
+      </a>
+      {% else %}
+      <a href="/session/{{ p.session_id }}" class="text-muted small">view</a>
+      {% endif %}
+    </td>
+    <td class="text-nowrap small">{{ fmt_ts(p.start_ts) }}</td>
+    <td>
+      <span class="fw-bold text-info fs-6">{{ fmt_mph(p.sw_speed_mph) }}</span>
+      <span class="text-muted small"> mph</span>
+    </td>
+    <td>
+      {% if p.plate %}
+      <span class="badge bg-dark border border-warning text-warning font-monospace"
+            title="OCR confidence {{ '%.0f'|format((p.plate_confidence or 0) * 100) }}%">{{ p.plate }}</span>
+      {% else %}
+      <span class="text-muted small">—</span>
+      {% endif %}
+    </td>
+    <td>
+      <span class="conf-badge bg-{{ confidence_class(p.confidence) }}">
+        {{ "%.0f"|format(p.confidence * 100) }}%
+      </span>
+    </td>
+    <td class="small text-muted">{{ p.frames_in_zone }}</td>
+    <td class="small text-muted">{{ "%.2f"|format(p.dwell_seconds) }}s</td>
+    <td>
+      {% if p.user_label %}
+      <span class="badge badge-label-{{ p.user_label }}">{{ p.user_label|replace('_',' ') }}</span>
+      {% else %}
+      <span class="text-muted small">—</span>
+      {% endif %}
+    </td>
+    <td class="text-nowrap">
+      <a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0">View</a>
+      <button class="btn btn-sm btn-outline-danger py-0"
+              onclick="deleteSession({{ p.session_id }}, this)">Del</button>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="text-center text-muted py-4">
+    No passes yet. <a href="/calibrate">Set up calibration</a> and wait for a vehicle.
+  </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if total > limit %}
+<nav><ul class="pagination pagination-sm">
+  {% if page > 1 %}
+  <li class="page-item">
+    <a class="page-link" href="/?page={{ page-1 }}&order_by={{ order_by }}&label={{ label_filter }}">‹ Prev</a>
+  </li>
+  {% endif %}
+  <li class="page-item disabled"><span class="page-link">{{ page }} / {{ ((total-1)//limit)+1 }}</span></li>
+  {% if page * limit < total %}
+  <li class="page-item">
+    <a class="page-link" href="/?page={{ page+1 }}&order_by={{ order_by }}&label={{ label_filter }}">Next ›</a>
+  </li>
+  {% endif %}
+</ul></nav>
+{% endif %}
+
+<script>
+async function deleteSession(id, btn) {
+  if (!confirm('Delete session #' + id + ' and all its files?')) return;
+  const r = await fetch('/api/sessions/' + id, {method: 'DELETE'});
+  if (r.ok) btn.closest('tr').remove();
+  else alert('Delete failed: ' + await r.text());
+}
+</script>
+{% endblock %}

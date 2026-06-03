@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Session #{{ session.id }} — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <h5 class="mb-1">Session #{{ session.id }}
+      <span class="badge {% if session.status == 'done' %}bg-success{% elif session.status == 'empty' %}bg-secondary{% else %}bg-warning text-dark{% endif %} fs-6">
+        {{ session.status }}
+      </span>
+    </h5>
+    <div class="text-muted small">
+      Camera: <code>{{ session.camera }}</code> &nbsp;·&nbsp;
+      Start: {{ fmt_ts(session.start_ts) }} &nbsp;·&nbsp;
+      Frames: {{ session.frames_seen }}
+    </div>
+  </div>
+  <div class="col-auto d-flex gap-2">
+    <a href="/" class="btn btn-sm btn-outline-secondary">← Back</a>
+    <button class="btn btn-sm btn-outline-danger"
+            onclick="deleteSession({{ session.id }})">Delete session</button>
+  </div>
+</div>
+
+{% if session.clip_path %}
+<div class="mb-4">
+  <video controls style="max-width:640px;width:100%">
+    <source src="/{{ session.clip_path }}" type="video/mp4">
+  </video>
+</div>
+{% endif %}
+
+{% if passes %}
+{% for p in passes %}
+<div class="card mb-4">
+  <div class="card-header small d-flex align-items-center gap-3">
+    <span class="fw-bold">Track #{{ p.track_id }}</span>
+    <span class="fw-bold text-info fs-5">{{ fmt_mph(p.sw_speed_mph) }} mph</span>
+    {% if p.plate %}
+    <span class="badge bg-dark border border-warning text-warning fs-6 font-monospace"
+          title="OCR confidence {{ '%.0f'|format((p.plate_confidence or 0) * 100) }}%">{{ p.plate }}</span>
+    {% endif %}
+    <span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span>
+    <span class="text-muted">{{ p.frames_in_zone }} frames · {{ "%.2f"|format(p.dwell_seconds) }}s dwell</span>
+    <span class="text-muted ms-auto">heading {{ "%.0f"|format(p.median_heading_deg) }}° · disp {{ "%.2f"|format(p.net_displacement_m) }}m</span>
+  </div>
+  <div class="card-body">
+    {% if p.entry_frame_raw_path or p.exit_frame_raw_path %}
+    <div class="row g-2 mb-3">
+      {% if p.entry_frame_raw_path %}
+      <div class="col-12 col-md-6">
+        <div class="text-muted small mb-1">Entry (full res)</div>
+        <img src="/{{ p.entry_frame_raw_path }}" style="width:100%;border-radius:4px;display:block">
+      </div>
+      {% endif %}
+      {% if p.exit_frame_raw_path %}
+      <div class="col-12 col-md-6">
+        <div class="text-muted small mb-1">Exit (full res)</div>
+        <img src="/{{ p.exit_frame_raw_path }}" style="width:100%;border-radius:4px;display:block">
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="row g-2 mb-3">
+      {% if p.trajectory_overlay_path %}
+      <div class="col-auto">
+        <div class="text-muted small mb-1">Trajectory</div>
+        <img src="/{{ p.trajectory_overlay_path }}" style="max-height:160px;border-radius:4px">
+      </div>
+      {% endif %}
+      {% if p.entry_frame_path %}
+      <div class="col-auto">
+        <div class="text-muted small mb-1">Entry</div>
+        <img src="/{{ p.entry_frame_path }}" style="max-height:160px;border-radius:4px">
+      </div>
+      {% endif %}
+      {% if p.exit_frame_path %}
+      <div class="col-auto">
+        <div class="text-muted small mb-1">Exit</div>
+        <img src="/{{ p.exit_frame_path }}" style="max-height:160px;border-radius:4px">
+      </div>
+      {% endif %}
+    </div>
+
+    <form method="post" action="/api/passes/{{ p.id }}/label" class="row g-2 align-items-end">
+      <div class="col-auto">
+        <div class="btn-group btn-group-sm" role="group">
+          <input type="radio" class="btn-check" name="label" id="ok-{{ p.id }}" value="sw_ok"
+                 {% if p.user_label == 'sw_ok' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-success" for="ok-{{ p.id }}">✅ OK</label>
+
+          <input type="radio" class="btn-check" name="label" id="wrong-{{ p.id }}" value="sw_wrong"
+                 {% if p.user_label == 'sw_wrong' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-danger" for="wrong-{{ p.id }}">❌ Wrong</label>
+
+          <input type="radio" class="btn-check" name="label" id="unsure-{{ p.id }}" value="unsure"
+                 {% if p.user_label == 'unsure' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-warning" for="unsure-{{ p.id }}">❓ Unsure</label>
+        </div>
+      </div>
+      <div class="col-auto">
+        <input type="number" name="corrected_mph" class="form-control form-control-sm"
+               style="width:100px" placeholder="correct mph"
+               value="{{ p.user_corrected_mph if p.user_corrected_mph else '' }}"
+               step="0.5">
+      </div>
+      <div class="col">
+        <input type="text" name="notes" class="form-control form-control-sm"
+               placeholder="notes" value="{{ p.user_notes or '' }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-primary">Save label</button>
+      </div>
+      <div class="col-auto ms-auto">
+        <button type="button" class="btn btn-sm btn-outline-danger"
+                onclick="deletePass({{ p.id }}, this)">Delete pass</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="alert alert-secondary">No qualifying passes found in this session.</div>
+{% endif %}
+
+<script>
+async function deleteSession(id) {
+  if (!confirm('Delete session #' + id + ', its clip, and all stills?')) return;
+  const r = await fetch('/api/sessions/' + id, {method: 'DELETE'});
+  if (r.ok) window.location.href = '/';
+  else alert('Delete failed: ' + await r.text());
+}
+async function deletePass(id, btn) {
+  if (!confirm('Delete this pass and its stills?')) return;
+  const r = await fetch('/api/passes/' + id, {method: 'DELETE'});
+  if (r.ok) btn.closest('.card').remove();
+  else alert('Delete failed: ' + await r.text());
+}
+</script>
+{% endblock %}

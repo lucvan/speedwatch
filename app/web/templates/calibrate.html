@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Calibrate — Speedwatch{% endblock %}
+
+{% block content %}
+<h5 class="mb-3">Zone Calibration — <code>{{ camera }}</code></h5>
+
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card mb-3">
+      <div class="card-header small d-flex align-items-center gap-2">
+        Click 4 zone corners on the snapshot (clockwise from top-left)
+        <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="resetPoints()">Reset</button>
+      </div>
+      <div class="card-body p-2 position-relative">
+        <canvas id="cal-canvas" style="width:100%;cursor:crosshair;border-radius:4px"></canvas>
+        <div id="point-status" class="text-muted small mt-1">0 / 4 corners selected</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card mb-3">
+      <div class="card-header small">Measurements (metres)</div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          Tape-measure the 4 edges and one diagonal of the zone on the road.
+          Corners are numbered 0–3 in the order you clicked them.
+        </p>
+        <div class="mb-2">
+          <label class="form-label small">Edge 0→1 (m)</label>
+          <input type="number" id="e01" class="form-control form-control-sm" step="0.01" placeholder="e.g. 7.2">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small">Edge 1→2 (m)</label>
+          <input type="number" id="e12" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2.1">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small">Edge 2→3 (m)</label>
+          <input type="number" id="e23" class="form-control form-control-sm" step="0.01" placeholder="e.g. 6.5">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small">Edge 3→0 (m)</label>
+          <input type="number" id="e30" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2.0">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small">Diagonal 0→2 (m)</label>
+          <input type="number" id="d02" class="form-control form-control-sm" step="0.01" placeholder="e.g. 7.5">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small">Notes (optional)</label>
+          <input type="text" id="cal-notes" class="form-control form-control-sm" placeholder="e.g. taped to kerb marks">
+        </div>
+        <button class="btn btn-primary w-100" id="save-btn" onclick="saveCalibration()" disabled>
+          Save & Activate
+        </button>
+        <div id="save-result" class="mt-2 small"></div>
+      </div>
+    </div>
+
+    {% if calibrations %}
+    <div class="card">
+      <div class="card-header small">Previous calibrations</div>
+      <div class="card-body p-2">
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Date</th><th>Residual</th><th>Status</th></tr></thead>
+          <tbody>
+          {% for c in calibrations %}
+          <tr class="{{ 'table-success' if c.active else '' }}">
+            <td class="small">{{ fmt_ts(c.created_at) }}</td>
+            <td class="small">{{ "%.1f"|format(c.residual_max_px) }}px</td>
+            <td>{% if c.active %}<span class="badge bg-success">active</span>{% else %}<span class="text-muted small">—</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/calibrate.js"></script>
+<script>
+  initCalibration('/snapshot/{{ camera }}', '{{ camera }}');
+</script>
+{% endblock %}

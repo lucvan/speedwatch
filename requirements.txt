@@ -1,0 +1,23 @@
+# Install onnxruntime-directml LAST (or force-reinstall after everything else).
+# ultralytics will auto-pull plain onnxruntime during export; reinstall directml
+# after any such operation to restore DmlExecutionProvider.
+onnxruntime-directml==1.24.4
+# onnx is listed separately to satisfy ultralytics checks without pulling plain onnxruntime
+onnx>=1.12.0,<2.0.0
+
+ultralytics>=8.4.0
+supervision>=0.24.0,<0.30
+opencv-python-headless>=4.10.0
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+aiosqlite==0.20.0
+Pillow>=11.0.0
+shapely>=2.0.0
+jinja2>=3.1.4
+python-multipart>=0.0.17
+aiofiles>=24.1.0
+numpy>=1.26.0
+python-dotenv>=1.0.0
+# ANPR — pulls fast-plate-ocr + open-image-models. Both use the already-installed
+# onnxruntime (no version change), so DmlExecutionProvider is preserved.
+fast-alpr>=0.4.0

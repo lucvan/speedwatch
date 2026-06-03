@@ -1,0 +1,24 @@
+# Secrets / local config
+.env
+.env.local
+*.secret
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Model weights (fetch via bootstrap.ps1)
+models/
+*.onnx
+
+# Vendored binaries (fetch via bootstrap.ps1)
+ffmpeg.exe
+ffprobe.exe
+
+# Runtime data / clips / logs / sqlite
+data/
+*.log
+*.db
+*.sqlite
+*.mp4

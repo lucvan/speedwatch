@@ -1,0 +1,4 @@
+/* Extra overrides beyond what's inlined in base.html */
+video { border-radius: 4px; }
+code { color: #80cbc4; }
+.table td, .table th { vertical-align: middle; }
