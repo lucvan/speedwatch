@@ -4,8 +4,83 @@
 {% block content %}
 <h5 class="mb-3">Zone Calibration — <code>{{ camera }}</code></h5>
 
+{% if intrinsics %}
+<div class="alert alert-success py-2 small mb-3">
+  <strong>Lens distortion correction: ON</strong>
+  {% if intrinsics.method == 'manual' %}
+    (manually tuned: k1={{ "%.3f"|format(intrinsics.dist_coeffs[0]) }},
+     k2={{ "%.3f"|format(intrinsics.dist_coeffs[1]) }}).
+  {% else %}
+    (chessboard, {{ intrinsics.n_images }} views, RMS {{ "%.2f"|format(intrinsics.rms) }} px).
+  {% endif %}
+  Saving a zone calibration below bakes this correction in. Re-tune below to change it.
+  {% if calibrations %}
+  <div class="mt-2">
+    <button class="btn btn-sm btn-outline-success" onclick="reapplyLens()">
+      Re-apply lens to current zone calibration
+    </button>
+    <span id="reapply-result" class="small ms-2"></span>
+  </div>
+  <div class="text-muted small mt-1">
+    Reuses your existing corners + measurements — no re-clicking. Takes effect on the next vehicle.
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="alert alert-warning py-2 small mb-3">
+  <strong>Lens distortion correction: OFF.</strong>
+  This wide-FOV camera has no lens intrinsics, so the homography can't account for barrel
+  distortion (worst at the frame edges). Tune it below, or run
+  <code>python -m app.intrinsics capture</code> + <code>calibrate</code> for a chessboard fit.
+</div>
+{% endif %}
+
 <div class="row g-3">
   <div class="col-lg-8">
+    <div class="card mb-3">
+      <div class="card-header small d-flex align-items-center gap-2">
+        Lens distortion <span class="text-muted">— tune this first</span>
+        <button class="btn btn-sm btn-outline-primary ms-auto" id="lens-toggle" onclick="toggleLensMode()">Tune lens…</button>
+      </div>
+      <div class="card-body p-2 d-none" id="lens-panel">
+        <p class="text-muted small mb-2">
+          Drag <strong>Strength</strong> until things that are straight in real life
+          (kerb, road edge, fence top, a wall) line up straight against the green grid.
+          Then Save. Scale is handled later by your tape measurements, so the focal value
+          rarely needs touching.
+        </p>
+        <div class="mb-2">
+          <label class="form-label small d-flex justify-content-between mb-1">
+            <span>Strength (k1) — drag left to pull in barrel bulge</span><span id="k1-val">0.000</span>
+          </label>
+          <input type="range" class="form-range" id="k1" min="-0.6" max="0.3" step="0.005" value="0">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small d-flex justify-content-between mb-1">
+            <span>Edge (k2) — fine-tune the far edges</span><span id="k2-val">0.000</span>
+          </label>
+          <input type="range" class="form-range" id="k2" min="-0.3" max="0.3" step="0.005" value="0">
+        </div>
+        <details class="mb-2">
+          <summary class="small text-muted">Advanced: focal length</summary>
+          <label class="form-label small d-flex justify-content-between mb-1 mt-1">
+            <span>Focal (fraction of frame width)</span><span id="f-val">0.50</span>
+          </label>
+          <input type="range" class="form-range" id="f" min="0.3" max="1.2" step="0.01" value="0.5">
+        </details>
+        <div class="d-flex align-items-center gap-2 mt-1 flex-wrap">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="grid-toggle" checked onchange="redrawLens()">
+            <label class="form-check-label small" for="grid-toggle">Show straight grid</label>
+          </div>
+          <button class="btn btn-sm btn-outline-secondary" onclick="refreshLensFrame()">New snapshot</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="resetLens()">Reset</button>
+          <button class="btn btn-sm btn-primary ms-auto" onclick="saveLens()">Save lens correction</button>
+        </div>
+        <div id="lens-result" class="small mt-2"></div>
+      </div>
+    </div>
+
     <div class="card mb-3">
       <div class="card-header small d-flex align-items-center gap-2">
         Click 4 zone corners on the snapshot (clockwise from top-left)
@@ -81,7 +156,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/calibrate.js"></script>
+<script src="/static/calibrate.js?v={{ static_v }}"></script>
 <script>
   initCalibration('/snapshot/{{ camera }}', '{{ camera }}');
 </script>

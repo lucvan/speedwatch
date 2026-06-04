@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Evidence — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+  <h5 class="mb-0">🚨 Confirmed speeders <span class="badge bg-danger">{{ total }}</span></h5>
+  <div class="ms-auto d-flex gap-2">
+    <a href="/api/evidence/export.zip" class="btn btn-sm btn-danger {% if not total %}disabled{% endif %}">
+      ⬇ Download evidence bundle (.zip)
+    </a>
+    <a href="/api/evidence/export.csv" class="btn btn-sm btn-outline-secondary {% if not total %}disabled{% endif %}">
+      ⬇ CSV only
+    </a>
+  </div>
+</div>
+
+<p class="text-muted small">
+  Passes you flagged directly, plus every pass of any vehicle flagged as a confirmed speeder.
+  The ZIP contains one folder per pass (video clip + entry/exit stills) and a
+  <code>manifest.csv</code> listing date/time, plate and measured speed — ready to forward to the council.
+</p>
+
+{% if passes %}
+<div class="table-responsive">
+<table class="table table-hover table-sm align-middle">
+  <thead class="table-dark">
+    <tr>
+      <th>#</th><th>Thumb</th><th>Date / time</th><th>Speed</th><th>Plate</th>
+      <th>Conf</th><th>Source</th><th>Reviewed mph</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in passes %}
+  <tr>
+    <td class="text-muted small">{{ loop.index }}</td>
+    <td class="thumb">
+      {% if p.car_crop_path %}<a href="/session/{{ p.session_id }}"><img src="/{{ p.car_crop_path }}" loading="lazy"></a>
+      {% elif p.entry_frame_path %}<a href="/session/{{ p.session_id }}"><img src="/{{ p.entry_frame_path }}" loading="lazy"></a>
+      {% else %}<a href="/session/{{ p.session_id }}" class="small">view</a>{% endif %}
+    </td>
+    <td class="small text-nowrap">{{ fmt_ts(p.start_ts) }}</td>
+    <td><span class="fw-bold text-info">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="text-muted small">mph</span></td>
+    <td>
+      {% if p.canonical_plate %}
+      <a href="/vehicle/{{ p.canonical_plate }}">
+        <span class="badge bg-dark border border-warning text-warning font-monospace">{{ p.canonical_plate }}</span></a>
+      {% else %}<span class="text-muted small">—</span>{% endif %}
+    </td>
+    <td><span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span></td>
+    <td class="small">
+      {% if p.pass_confirmed %}<span class="badge bg-danger">pass</span>
+      {% else %}<span class="badge bg-secondary">vehicle</span>{% endif %}
+    </td>
+    <td class="small text-muted">{{ ("%.1f"|format(p.user_corrected_mph)) if p.user_corrected_mph else '—' }}</td>
+    <td class="text-nowrap">
+      <a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0">View</a>
+      {% if p.pass_confirmed %}
+      <button class="btn btn-sm btn-outline-danger py-0"
+              onclick="unflagPass({{ p.id }}, this)" title="Remove this pass from evidence">Remove</button>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="alert alert-secondary">
+  No confirmed speeders yet. Flag a pass from its <a href="/">session</a>, or flag a whole
+  vehicle from its <a href="/vehicles">vehicle page</a>, and it'll appear here for export.
+</div>
+{% endif %}
+
+<script>
+async function unflagPass(id, btn) {
+  const r = await fetch('/api/passes/' + id + '/confirm', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({confirmed: false})
+  });
+  if (r.ok) btn.closest('tr').remove();
+  else alert('Failed: ' + await r.text());
+}
+</script>
+{% endblock %}

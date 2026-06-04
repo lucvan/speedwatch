@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS calibration (
     residual_max_px  REAL    NOT NULL,
     frame_w          INTEGER NOT NULL DEFAULT 1280,
     frame_h          INTEGER NOT NULL DEFAULT 720,
+    camera_matrix    TEXT,
+    dist_coeffs      TEXT,
+    intrinsics_rms   REAL,
     active           INTEGER NOT NULL DEFAULT 0,
     notes            TEXT,
     created_at       REAL    NOT NULL
@@ -69,15 +72,39 @@ CREATE TABLE IF NOT EXISTS pass (
     hq_exit_frame_path       TEXT,
     plate                    TEXT,
     plate_confidence         REAL,
+    car_crop_path            TEXT,
     user_label               TEXT,
     user_corrected_mph       REAL,
     user_notes               TEXT,
+    confirmed_speeder        INTEGER NOT NULL DEFAULT 0,
     created_at               REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pass_session    ON pass(session_id);
 CREATE INDEX IF NOT EXISTS idx_pass_label      ON pass(user_label);
 CREATE INDEX IF NOT EXISTS idx_pass_confidence ON pass(confidence);
 CREATE INDEX IF NOT EXISTS idx_pass_speed      ON pass(sw_speed_mph DESC);
+CREATE INDEX IF NOT EXISTS idx_pass_plate      ON pass(plate);
+
+CREATE TABLE IF NOT EXISTS vehicle (
+    plate            TEXT PRIMARY KEY,
+    description      TEXT,        -- AI vision description (make/colour/body)
+    described_at     REAL,        -- when the AI description was generated
+    user_description TEXT,        -- manually entered description
+    user_notes       TEXT,        -- free-form notes / metadata
+    rep_image_path   TEXT,        -- representative car crop (best plate read)
+    rep_plate_conf   REAL,        -- plate confidence of the rep image's pass
+    confirmed_speeder INTEGER NOT NULL DEFAULT 0,  -- user-flagged: all passes count as evidence
+    created_at       REAL NOT NULL
+);
+
+-- Maps an OCR-variant plate to its canonical plate so passes group as one vehicle.
+-- Resolved at query time (raw pass.plate is never rewritten — merges are reversible).
+CREATE TABLE IF NOT EXISTS plate_alias (
+    alias      TEXT PRIMARY KEY,
+    canonical  TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alias_canonical ON plate_alias(canonical);
 """
 
 
@@ -86,13 +113,22 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.executescript(_SCHEMA)
         # Migrate existing tables
-        for col in ("hq_frame_path", "hq_exit_frame_path", "plate"):
+        for col in ("hq_frame_path", "hq_exit_frame_path", "plate", "car_crop_path"):
             try:
                 await conn.execute(f"ALTER TABLE pass ADD COLUMN {col} TEXT")
             except Exception:
                 pass
         try:
             await conn.execute("ALTER TABLE pass ADD COLUMN plate_confidence REAL")
+        except Exception:
+            pass
+        # Confirmed-speeder evidence flags (pass-level and vehicle-level).
+        try:
+            await conn.execute("ALTER TABLE pass ADD COLUMN confirmed_speeder INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            await conn.execute("ALTER TABLE vehicle ADD COLUMN confirmed_speeder INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
         for col, default in (("frame_w", 1280), ("frame_h", 720)):
@@ -102,6 +138,16 @@ async def init_db():
                 )
             except Exception:
                 pass
+        # Lens intrinsics baked into a calibration (added with distortion-correction support).
+        for col in ("camera_matrix", "dist_coeffs"):
+            try:
+                await conn.execute(f"ALTER TABLE calibration ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
+        try:
+            await conn.execute("ALTER TABLE calibration ADD COLUMN intrinsics_rms REAL")
+        except Exception:
+            pass
         # Recompute homography for degenerate quads (pt3_y < 0.5)
         import json as _json
         rows = await (await conn.execute(
@@ -137,8 +183,9 @@ async def save_calibration(cal: dict) -> int:
             """INSERT INTO calibration
                (camera, zone_pixels, edge_distances_m, diagonal_m, world_coords,
                 homography, road_axis_deg, residual_max_px, frame_w, frame_h,
+                camera_matrix, dist_coeffs, intrinsics_rms,
                 active, notes, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
             (
                 cal["camera"],
                 json.dumps(cal["zone_pixels"]),
@@ -150,6 +197,9 @@ async def save_calibration(cal: dict) -> int:
                 cal["residual_max_px"],
                 cal.get("frame_w", 1280),
                 cal.get("frame_h", 720),
+                json.dumps(cal["camera_matrix"]) if cal.get("camera_matrix") else None,
+                json.dumps(cal["dist_coeffs"]) if cal.get("dist_coeffs") else None,
+                cal.get("intrinsics_rms"),
                 cal.get("notes", ""),
                 now,
             ),
@@ -164,6 +214,8 @@ def _decode_cal_row(d: dict) -> dict:
     d["edge_distances_m"] = json.loads(d["edge_distances_m"])
     d["world_coords"]     = json.loads(d["world_coords"])
     d["homography"]       = json.loads(d["homography"])
+    d["camera_matrix"]    = json.loads(d["camera_matrix"]) if d.get("camera_matrix") else None
+    d["dist_coeffs"]      = json.loads(d["dist_coeffs"]) if d.get("dist_coeffs") else None
     return d
 
 
@@ -299,6 +351,15 @@ async def update_pass_label(pass_id: int, label: str | None, notes: str | None, 
         await conn.commit()
 
 
+async def set_pass_confirmed(pass_id: int, confirmed: bool) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE pass SET confirmed_speeder=? WHERE id=?",
+            (1 if confirmed else 0, pass_id),
+        )
+        await conn.commit()
+
+
 async def get_pass(pass_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
@@ -333,3 +394,262 @@ async def delete_pass(pass_id: int) -> dict | None:
         await conn.execute("DELETE FROM pass WHERE id=?", (pass_id,))
         await conn.commit()
     return p
+
+
+# ── vehicles (grouped by plate) ──────────────────────────────────────────────
+
+# Leaderboard / per-plate stats are computed live from the pass table; the vehicle
+# table only holds enrichment (AI + manual descriptions, representative image).
+
+_VEHICLE_STATS_SQL = """
+    SELECT COALESCE(a.canonical, p.plate) AS plate,
+           COUNT(*)                       AS passes,
+           MAX(p.sw_speed_mph)            AS max_mph,
+           AVG(p.sw_speed_mph)            AS avg_mph,
+           MIN(p.sw_speed_mph)            AS min_mph,
+           MAX(s.start_ts)                AS last_seen,
+           MIN(s.start_ts)                AS first_seen
+    FROM pass p JOIN pass_session s ON s.id = p.session_id
+    LEFT JOIN plate_alias a ON a.alias = p.plate
+    WHERE p.plate IS NOT NULL AND p.plate <> ''
+    GROUP BY COALESCE(a.canonical, p.plate)
+"""
+
+
+async def list_vehicles(order_by: str = "max_mph", min_passes: int = 1) -> list[dict]:
+    order_sql = {
+        "max_mph":  "max_mph DESC",
+        "avg_mph":  "avg_mph DESC",
+        "passes":   "passes DESC",
+        "last_seen": "last_seen DESC",
+    }.get(order_by, "max_mph DESC")
+    sql = f"""
+        SELECT st.*, v.description, v.user_description, v.user_notes, v.rep_image_path,
+               v.confirmed_speeder
+        FROM ( {_VEHICLE_STATS_SQL} ) st
+        LEFT JOIN vehicle v ON v.plate = st.plate
+        WHERE st.passes >= ?
+        ORDER BY {order_sql}
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(sql, (min_passes,))
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_vehicle(plate: str) -> dict | None:
+    """Stats + enrichment for one plate. None if no passes carry that plate."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            f"SELECT * FROM ( {_VEHICLE_STATS_SQL} ) WHERE plate = ?", (plate,)
+        )
+        st = await cur.fetchone()
+        if st is None:
+            return None
+        v = dict(st)
+        cur = await conn.execute("SELECT * FROM vehicle WHERE plate=?", (plate,))
+        meta = await cur.fetchone()
+        if meta:
+            v.update({k: meta[k] for k in meta.keys() if k != "plate"})
+        return v
+
+
+async def list_passes_for_plate(plate: str) -> list[dict]:
+    """All passes whose canonical plate is `plate` (includes merged aliases)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            """SELECT p.*, s.start_ts, s.clip_path AS session_clip_path
+               FROM pass p JOIN pass_session s ON s.id = p.session_id
+               LEFT JOIN plate_alias a ON a.alias = p.plate
+               WHERE COALESCE(a.canonical, p.plate) = ? ORDER BY s.start_ts DESC""",
+            (plate,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def canonical_plate(plate: str) -> str:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute("SELECT canonical FROM plate_alias WHERE alias=?", (plate,))
+        row = await cur.fetchone()
+        return row[0] if row else plate
+
+
+async def aliases_of(canonical: str) -> list[str]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute("SELECT alias FROM plate_alias WHERE canonical=? ORDER BY alias", (canonical,))
+        return [r[0] for r in await cur.fetchall()]
+
+
+async def add_plate_aliases(canonical: str, aliases: list[str]) -> str:
+    """Point each alias plate at `canonical` (resolving chains). Returns the root canonical."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute("SELECT canonical FROM plate_alias WHERE alias=?", (canonical,))
+        r = await cur.fetchone()
+        root = r[0] if r else canonical          # if canonical is itself aliased, use its root
+        now = time.time()
+        for a in aliases:
+            if not a or a == root:
+                continue
+            # repoint anything currently pointing at `a` to the root, then alias a→root
+            await conn.execute("UPDATE plate_alias SET canonical=? WHERE canonical=?", (root, a))
+            await conn.execute(
+                "INSERT OR REPLACE INTO plate_alias (alias, canonical, created_at) VALUES (?,?,?)",
+                (a, root, now),
+            )
+        # the root must not be an alias of anything
+        await conn.execute("DELETE FROM plate_alias WHERE alias=?", (root,))
+        await conn.commit()
+    await ensure_vehicle(root)
+    return root
+
+
+async def remove_plate_alias(alias: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("DELETE FROM plate_alias WHERE alias=?", (alias,))
+        await conn.commit()
+
+
+async def unmerge_plate(canonical: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("DELETE FROM plate_alias WHERE canonical=?", (canonical,))
+        await conn.commit()
+
+
+async def list_distinct_plates() -> list[dict]:
+    """Distinct canonical plates with pass counts — for fuzzy match suggestions."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            """SELECT COALESCE(a.canonical, p.plate) AS plate, COUNT(*) AS passes
+               FROM pass p LEFT JOIN plate_alias a ON a.alias = p.plate
+               WHERE p.plate IS NOT NULL AND p.plate <> ''
+               GROUP BY COALESCE(a.canonical, p.plate)""",
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def passes_missing_car_crop() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            """SELECT id, plate, plate_confidence, entry_frame_raw_path, exit_frame_raw_path
+               FROM pass
+               WHERE plate IS NOT NULL AND plate <> '' AND (car_crop_path IS NULL OR car_crop_path = '')"""
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def set_pass_car_crop(pass_id: int, path: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE pass SET car_crop_path=? WHERE id=?", (path, pass_id))
+        await conn.commit()
+
+
+async def vehicle_pass_count(plate: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute(
+            "SELECT COUNT(*) FROM pass WHERE plate=?", (plate,)
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+
+async def ensure_vehicle(plate: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO vehicle (plate, created_at) VALUES (?, ?)",
+            (plate, time.time()),
+        )
+        await conn.commit()
+
+
+async def update_vehicle_rep_image(plate: str, image_path: str, plate_conf: float) -> None:
+    """Set the representative car image if this pass has the best plate confidence so far."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            """UPDATE vehicle SET rep_image_path=?, rep_plate_conf=?
+               WHERE plate=? AND (rep_plate_conf IS NULL OR ? > rep_plate_conf)""",
+            (image_path, plate_conf, plate, plate_conf),
+        )
+        await conn.commit()
+
+
+async def set_vehicle_description(plate: str, description: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE vehicle SET description=?, described_at=? WHERE plate=?",
+            (description, time.time(), plate),
+        )
+        await conn.commit()
+
+
+async def update_vehicle_meta(plate: str, user_description: str | None,
+                              user_notes: str | None) -> None:
+    await ensure_vehicle(plate)
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE vehicle SET user_description=?, user_notes=? WHERE plate=?",
+            (user_description, user_notes, plate),
+        )
+        await conn.commit()
+
+
+async def get_vehicle_meta(plate: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute("SELECT * FROM vehicle WHERE plate=?", (plate,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+# ── Confirmed-speeder evidence ───────────────────────────────────────────────
+
+async def set_vehicle_confirmed(plate: str, confirmed: bool) -> None:
+    """Flag a vehicle (by canonical plate) as a confirmed speeder. Every pass of that
+    vehicle then counts as evidence, on top of any individually-confirmed passes."""
+    await ensure_vehicle(plate)
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE vehicle SET confirmed_speeder=? WHERE plate=?",
+            (1 if confirmed else 0, plate),
+        )
+        await conn.commit()
+
+
+# A pass is evidence if it was flagged directly, OR its (canonical) vehicle is flagged.
+_EVIDENCE_WHERE = """
+    p.confirmed_speeder = 1
+    OR EXISTS (
+        SELECT 1 FROM vehicle v
+        WHERE v.plate = COALESCE((SELECT canonical FROM plate_alias WHERE alias = p.plate), p.plate)
+          AND v.confirmed_speeder = 1
+    )
+"""
+
+
+async def list_evidence_passes() -> list[dict]:
+    """All passes that count as confirmed-speeder evidence, newest first, with the data
+    needed for display and for the export bundle."""
+    sql = f"""
+        SELECT p.*, s.start_ts, s.camera, s.clip_path AS session_clip_path,
+               COALESCE((SELECT canonical FROM plate_alias WHERE alias = p.plate), p.plate) AS canonical_plate,
+               p.confirmed_speeder AS pass_confirmed
+        FROM pass p
+        JOIN pass_session s ON s.id = p.session_id
+        WHERE {_EVIDENCE_WHERE}
+        ORDER BY s.start_ts DESC
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(sql)
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def count_evidence_passes() -> int:
+    sql = f"SELECT COUNT(*) FROM pass p WHERE {_EVIDENCE_WHERE}"
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute(sql)
+        row = await cur.fetchone()
+        return row[0] if row else 0

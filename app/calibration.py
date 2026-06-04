@@ -120,18 +120,29 @@ def compute_homography(
     world_coords: list[tuple[float, float]],
     frame_w: int,
     frame_h: int,
+    camera_matrix: np.ndarray | None = None,
+    dist_coeffs=None,
 ) -> tuple[np.ndarray, float]:
     """
     Compute the perspective transform from pixel coords to world metre coords.
     zone_pixels_norm: normalised [0,1] pixel coords (4 corners).
     Returns (H, residual_max_px).
     H maps image pixel (x,y) → world (x,y) in metres.
+
+    If camera_matrix/dist_coeffs are supplied (expressed at frame_w×frame_h), the corner
+    pixels are lens-undistorted first, so H maps *undistorted* pixels → metres. The runtime
+    must then undistort points with the same K/dist before applying H. Residuals are
+    reported in undistorted pixel space.
     """
     src = np.array(
         [[x * frame_w, y * frame_h] for x, y in zone_pixels_norm],
         dtype=np.float32,
     )
     dst = np.array(world_coords, dtype=np.float32)
+
+    if camera_matrix is not None and dist_coeffs is not None:
+        from . import intrinsics as intr_mod
+        src = intr_mod.undistort_points(src, camera_matrix, dist_coeffs).astype(np.float32)
 
     H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
     if H is None:
@@ -235,11 +246,17 @@ def build_calibration(
     frame_w: int,
     frame_h: int,
     notes: str = "",
+    intrinsics: dict | None = None,
 ) -> dict:
     """
     Validate inputs, reconstruct world quad, compute homography.
     Returns a dict ready for db.save_calibration().
     Raises ValueError with a user-friendly message on bad input.
+
+    If `intrinsics` (camera lens K + distortion, from intrinsics.load()) is supplied, the
+    homography is built in lens-undistorted pixel space and the scaled K/dist are baked into
+    the returned calibration so the runtime can undistort consistently. If omitted, the
+    calibration is distortion-naive (previous behaviour) and runs unchanged.
     """
     if len(zone_pixels_norm) != 4:
         raise ValueError("Exactly 4 zone corners required")
@@ -254,7 +271,22 @@ def build_calibration(
     if dist_error > 0.05:
         log.warning("Quad distance residual %.3f m (>5cm) — measurements may be inconsistent", dist_error)
 
-    H, residual_px = compute_homography(zone_pixels_norm, world_coords, frame_w, frame_h)
+    cam_K = dist = None
+    if intrinsics is not None:
+        from . import intrinsics as intr_mod
+        cam_K = intr_mod.scale_camera_matrix(
+            np.array(intrinsics["camera_matrix"], dtype=np.float64),
+            (intrinsics["image_w"], intrinsics["image_h"]),
+            (frame_w, frame_h),
+        )
+        dist = np.array(intrinsics["dist_coeffs"], dtype=np.float64)
+        log.info("Calibration using lens intrinsics (RMS %.3f px, scaled to %dx%d)",
+                 intrinsics.get("rms", float("nan")), frame_w, frame_h)
+
+    H, residual_px = compute_homography(
+        zone_pixels_norm, world_coords, frame_w, frame_h,
+        camera_matrix=cam_K, dist_coeffs=dist,
+    )
     road_axis = road_axis_from_edge(zone_pixels_norm, H)
 
     return {
@@ -269,6 +301,10 @@ def build_calibration(
         "frame_w": frame_w,
         "frame_h": frame_h,
         "notes": notes,
+        # Lens intrinsics baked in at the calibration resolution (None if not lens-calibrated).
+        "camera_matrix": cam_K.tolist() if cam_K is not None else None,
+        "dist_coeffs": dist.tolist() if dist is not None else None,
+        "intrinsics_rms": intrinsics.get("rms") if intrinsics is not None else None,
     }
 
 

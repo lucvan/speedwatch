@@ -20,6 +20,7 @@ import numpy as np
 
 from . import calibration as cal_mod
 from . import config
+from . import intrinsics as intr_mod
 from .detect import Detection
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,19 @@ class LiveTracker:
         self._cal_h = int(calibration.get("frame_h", 720))
         self._fps   = fps
 
+        # Lens distortion: if the active calibration baked in K/dist (at the calibration
+        # resolution), ground points are undistorted before the homography — matching how
+        # the homography itself was built. Without intrinsics this is a no-op.
+        cm = calibration.get("camera_matrix")
+        dc = calibration.get("dist_coeffs")
+        if cm is not None and dc is not None:
+            self._cam_K = np.array(cm, dtype=np.float64)
+            self._dist  = np.array(dc, dtype=np.float64)
+            log.info("LiveTracker: lens undistortion ON (RMS %.3f px)",
+                     calibration.get("intrinsics_rms") or float("nan"))
+        else:
+            self._cam_K = self._dist = None
+
         self._tracker = sv.ByteTrack(
             frame_rate=max(1, int(round(fps))),
             track_activation_threshold=0.30,
@@ -155,11 +169,13 @@ class LiveTracker:
             bc_y      = by2
             bbox_area = (bx2 - bx1) * (by2 - by1)
             in_zone   = self._zone.contains_px(bc_x, bc_y, w, h)
-            wx, wy    = cal_mod.pixel_to_world(
-                bc_x * self._cal_w / w,
-                bc_y * self._cal_h / h,
-                self._H,
-            )
+            # Scale the live ground point to the calibration resolution, undistort it (if the
+            # calibration carries lens intrinsics), then project to world metres.
+            gx = bc_x * self._cal_w / w
+            gy = bc_y * self._cal_h / h
+            if self._cam_K is not None:
+                (gx, gy) = intr_mod.undistort_points([(gx, gy)], self._cam_K, self._dist)[0]
+            wx, wy    = cal_mod.pixel_to_world(gx, gy, self._H)
             rec = _FrameRecord(
                 t_ms=t_ms, wx=wx, wy=wy,
                 bx_center=bc_x, by_center=bc_y,

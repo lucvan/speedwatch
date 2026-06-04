@@ -90,9 +90,50 @@ nssm status speedwatch
 > NSSM commands need an **elevated** shell. If `nssm` isn't found, copy it from the
 > winget package dir to `C:\Windows\System32\nssm.exe` first.
 
-## Homography calibration
+## Calibration
 
-Speed accuracy depends on the image→ground homography. Use the calibration helper in
-`app/calibration.py` to map four known ground points (e.g. road markings of known
-spacing) to pixel coordinates; the resulting matrix turns per-track pixel displacement
-into metres, then mph. Re-calibrate whenever the camera is moved or re-aimed.
+Speed accuracy depends on two calibrations, in this order.
+
+### 1. Lens intrinsics (distortion correction) — do this once per camera
+
+The zone homography is a planar projective transform: it is exact only for a pinhole
+camera. A wide-FOV lens adds radial (barrel) distortion that a homography can't represent,
+so the pixel→metre mapping drifts toward the frame edges — exactly where a side-on vehicle
+enters and leaves frame.
+
+**Easiest: the on-screen slider tuner (plumb-line method).** On `/calibrate`, click
+**Tune lens…**, then drag *Strength* (and optionally *Edge*) until things that are straight
+in real life — the kerb, road edge, a fence top or wall — line up straight against the green
+reference grid, and **Save lens correction**. No printed board needed; absolute scale is set
+later by your tape measurements, so the focal control rarely needs touching. This writes the
+same intrinsics file the chessboard method produces.
+
+**Most accurate: chessboard calibration.** Print a board and run:
+
+```powershell
+# Print a chessboard (a standard 10x7-square board = 9x6 inner corners). Hold it in the
+# camera's view and move it around the WHOLE frame — especially the corners/edges where
+# distortion is worst — tilting it at varied angles.
+
+# 1. Capture views through the actual camera stream (saves frames where a board is found):
+python -m app.intrinsics capture --count 30 --cols 9 --rows 6
+
+# 2. Estimate K + distortion coefficients (writes data/intrinsics/<camera>.json):
+python -m app.intrinsics calibrate --cols 9 --rows 6 --square 0.025
+```
+
+Aim for a reprojection RMS < 1.0 px (printed at the end of step 2). The intrinsics are then
+**baked into the next zone calibration you save**, and the live pipeline undistorts each
+ground point before the homography. Without intrinsics everything still runs — just without
+distortion correction (and the `/calibrate` page shows a warning).
+
+### 2. Zone homography
+
+Map the image to the ground plane: open `/calibrate`, click the four zone corners on the
+snapshot, and enter the four edge lengths + one diagonal (tape-measured on the road). The
+resulting matrix turns per-track pixel displacement into metres, then mph. Re-save the zone
+calibration after (re)running lens calibration, and whenever the camera is moved or re-aimed.
+
+> **Timing note:** frame timestamps come from a monotonic frame index (ffmpeg emits CFR at
+> `DETECT_FPS`), not wall-clock-at-read. Read-time clock jitter used to corrupt `dt` in
+> `speed = displacement / dt`, which scaled with speed and threw off faster vehicles.

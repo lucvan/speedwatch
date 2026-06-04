@@ -19,6 +19,7 @@ from . import detect as detect_mod
 from . import speed as speed_mod
 from . import clip as clip_mod
 from . import alpr as alpr_mod
+from . import vehicles as vehicles_mod
 from .ingest import PassSession, ingest_loop
 from .server import app, set_pipeline_status
 
@@ -102,8 +103,9 @@ def _process_session(session: PassSession):
 
         # Number-plate recognition: read the plate inside the car box on both the entry
         # and exit raw frames; the higher-confidence read wins (the plate-visible end
-        # depends on travel direction).
+        # depends on travel direction). Remember the winning frame/bbox for the car crop.
         plate = plate_conf = None
+        best_frame, best_bbox = None, None
         _t = profiling.start()
         for frame_raw, bbox in (
             (result.entry_frame_raw, result.entry_bbox_xyxy),
@@ -112,9 +114,16 @@ def _process_session(session: PassSession):
             hit = alpr_mod.read_plate(frame_raw, bbox)
             if hit and (plate_conf is None or hit[1] > plate_conf):
                 plate, plate_conf = hit
+                best_frame, best_bbox = frame_raw, bbox
         profiling.record("alpr", _t)
         if plate:
             log.info("track %d: plate %s (conf %.2f)", result.track_id, plate, plate_conf)
+
+        # Car crop (from the plate-winning frame, else the entry frame) — used as the
+        # vehicle's representative image and the vision-description input.
+        crop_frame = best_frame if best_frame is not None else result.entry_frame_raw
+        crop_bbox  = best_bbox  if best_bbox  is not None else result.entry_bbox_xyxy
+        car_crop_path = clip_mod.save_car_crop(crop_frame, crop_bbox, str(session_id), result.track_id)
 
         pass_row = {
             "session_id":              session_id,
@@ -132,11 +141,27 @@ def _process_session(session: PassSession):
             "clip_path":               clip_path,
             "plate":                   plate,
             "plate_confidence":        plate_conf,
+            "car_crop_path":           car_crop_path,
             **stills,
         }
         asyncio.run_coroutine_threadsafe(
             db.insert_pass(pass_row), _main_loop
         ).result(timeout=10)
+
+        # Vehicle upkeep (only for plated passes): register the vehicle, keep the best
+        # car crop as its representative image, and auto-describe once it's a regular.
+        # Fire-and-forget on the event loop so the ~9s vision call never blocks ingest.
+        if plate:
+            async def _veh_upkeep(raw=plate, img=car_crop_path, pc=plate_conf or 0.0):
+                try:
+                    pl = await db.canonical_plate(raw)   # attach to merged vehicle if aliased
+                    await db.ensure_vehicle(pl)
+                    if img:
+                        await db.update_vehicle_rep_image(pl, img, pc)
+                    await vehicles_mod.maybe_describe(pl)
+                except Exception as e:
+                    log.warning("vehicle upkeep failed for %s: %s", raw, e)
+            asyncio.run_coroutine_threadsafe(_veh_upkeep(), _main_loop)
 
     asyncio.run_coroutine_threadsafe(
         db.finalize_session(session_id, time.time(), len(frames), "done", clip_path),
@@ -181,7 +206,7 @@ app.router.lifespan_context = _lifespan
 def main():
     uvicorn.run(
         "app.main:app",
-        host="127.0.0.1",
+        host=config.HOST,
         port=config.PORT,
         log_level="warning",
         reload=False,

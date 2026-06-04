@@ -107,7 +107,15 @@ def _run_once(on_session_ready, stop_event):
         history=_MOG2_HISTORY, varThreshold=_MOG2_THRESH, detectShadows=False
     )
 
-    t_start = time.time()
+    # Frame timeline: ffmpeg's `fps=N` filter emits constant-rate (CFR) frames, so the
+    # true spacing between output frames is exactly 1/DETECT_FPS — regardless of when our
+    # loop happens to read each one out of the pipe. We therefore timestamp frames from a
+    # monotonic frame index, NOT wall-clock-at-read. Read-time wall-clock jitters badly
+    # (pipe buffering + per-frame MOG2 work cause bursty reads), and that jitter is fed
+    # straight into speed = displacement / dt. The error scales with displacement, so it's
+    # negligible for slow cars but corrupts fast ones — index timing removes it entirely.
+    ms_per_frame = 1000.0 / config.DETECT_FPS
+    frame_idx = 0
 
     # Ring buffer for pre-trigger frames
     prebuf: list[tuple[np.ndarray, float]] = []
@@ -132,7 +140,8 @@ def _run_once(on_session_ready, stop_event):
                 log.warning("ffmpeg stream ended (read %d/%d bytes)", len(raw), frame_bytes)
                 break
 
-            t_ms   = (time.time() - t_start) * 1000.0
+            t_ms   = frame_idx * ms_per_frame
+            frame_idx += 1
             _t = profiling.start()
             frame  = np.frombuffer(raw, dtype=np.uint8).reshape((frame_h, frame_w, 3)).copy()
             profiling.record("frame_copy", _t)

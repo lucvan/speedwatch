@@ -35,9 +35,163 @@ function initCalibration(snapshotUrl, camera) {
   _img.src = snapshotUrl + '?t=' + Date.now();
 
   _canvas.addEventListener('click', _onCanvasClick);
+
+  // Lens tuner: sliders drive a debounced undistort preview of the snapshot.
+  _lensImg = new Image();
+  _lensImg.crossOrigin = 'anonymous';
+  _lensImg.onload = redrawLens;
+  ['k1', 'k2', 'f'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', _onLensInput);
+  });
+}
+
+// ── Lens distortion tuner ────────────────────────────────────────────────────
+
+let _lensMode = false;
+let _lensImg  = null;
+let _lensTimer = null;
+
+function _lensParams() {
+  const g = (id, d) => {
+    const el = document.getElementById(id);
+    return el ? parseFloat(el.value) : d;
+  };
+  return { k1: g('k1', 0), k2: g('k2', 0), f: g('f', 0.5) };
+}
+
+function _onLensInput() {
+  const p = _lensParams();
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  set('k1-val', p.k1.toFixed(3));
+  set('k2-val', p.k2.toFixed(3));
+  set('f-val',  p.f.toFixed(2));
+  clearTimeout(_lensTimer);
+  _lensTimer = setTimeout(() => updateLensPreview(false), 90);
+}
+
+function toggleLensMode() {
+  _lensMode = !_lensMode;
+  const panel = document.getElementById('lens-panel');
+  const btn   = document.getElementById('lens-toggle');
+  if (panel) panel.classList.toggle('d-none', !_lensMode);
+  if (btn)   btn.textContent = _lensMode ? 'Done' : 'Tune lens…';
+  _canvas.style.cursor = _lensMode ? 'default' : 'crosshair';
+  if (_lensMode) {
+    _onLensInput();              // sync labels
+    updateLensPreview(false);    // server grabs + caches a frame if needed
+  } else {
+    _redraw();                   // back to raw snapshot + corner markers
+  }
+}
+
+function updateLensPreview(refresh) {
+  if (!_lensMode) return;
+  const p = _lensParams();
+  const q = `camera=${encodeURIComponent(_camera)}&k1=${p.k1}&k2=${p.k2}&f=${p.f}` +
+            `&refresh=${refresh ? 1 : 0}&t=${Date.now()}`;
+  _lensImg.src = '/api/lens/preview?' + q;
+}
+
+function refreshLensFrame() { updateLensPreview(true); }
+
+function resetLens() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('k1', 0); set('k2', 0); set('f', 0.5);
+  _onLensInput();
+}
+
+function redrawLens() {
+  if (!_ctx) return;
+  _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+  if (_lensImg && _lensImg.complete && _lensImg.naturalWidth > 0) {
+    _ctx.drawImage(_lensImg, 0, 0, _canvas.width, _canvas.height);
+  }
+  const grid = document.getElementById('grid-toggle');
+  if (!grid || !grid.checked) return;
+
+  const W = _canvas.width, H = _canvas.height;
+  _ctx.lineWidth = 1;
+  for (let i = 1; i < 10; i++) {
+    const mid = (i === 5);
+    _ctx.strokeStyle = mid ? 'rgba(0,255,120,0.9)' : 'rgba(0,255,120,0.45)';
+    _ctx.lineWidth   = mid ? 2 : 1;
+    let x = Math.round(W * i / 10), y = Math.round(H * i / 10);
+    _ctx.beginPath(); _ctx.moveTo(x, 0); _ctx.lineTo(x, H); _ctx.stroke();
+    _ctx.beginPath(); _ctx.moveTo(0, y); _ctx.lineTo(W, y); _ctx.stroke();
+  }
+}
+
+async function _postReapply() {
+  const r = await fetch('/api/calibration/reapply-lens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ camera: _camera }),
+  });
+  let d = {};
+  try { d = await r.json(); } catch (e) { /* non-JSON (e.g. 404 page) */ }
+  return { ok: r.ok, status: r.status, data: d };
+}
+
+async function saveLens() {
+  const p = _lensParams();
+  const el = document.getElementById('lens-result');
+  el.textContent = 'Saving lens correction…';
+  el.className   = 'small mt-2 text-muted';
+  try {
+    const r = await fetch('/api/lens/save?camera=' + encodeURIComponent(_camera), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(p),
+    });
+    const d = await r.json();
+    if (!(r.ok && d.ok)) {
+      el.textContent = `Error: ${d.detail || JSON.stringify(d)}`;
+      el.className   = 'small mt-2 text-danger';
+      return;
+    }
+    // Auto-apply to the existing zone calibration so it takes effect with no re-clicking.
+    el.textContent = `Lens saved (${d.image_w}×${d.image_h}). Applying to your zone calibration…`;
+    const res = await _postReapply();
+    if (res.ok && res.data.ok) {
+      el.textContent = `Lens saved and applied to your zone calibration ` +
+                       `(residual ${res.data.residual_max_px.toFixed(1)} px). ` +
+                       `Live on the next vehicle.`;
+      el.className   = 'small mt-2 text-success';
+    } else if (res.status === 404) {
+      el.textContent = 'Lens saved. No zone calibration yet — click the 4 corners below and save to bake it in.';
+      el.className   = 'small mt-2 text-warning';
+    } else {
+      el.textContent = `Lens saved, but auto-apply failed (${res.data.detail || res.status}). ` +
+                       `Re-save your zone calibration, or restart the service if the button is new.`;
+      el.className   = 'small mt-2 text-warning';
+    }
+  } catch (err) {
+    el.textContent = `Network error: ${err.message}`;
+    el.className   = 'small mt-2 text-danger';
+  }
+}
+
+async function reapplyLens() {
+  const el = document.getElementById('reapply-result');
+  if (el) { el.textContent = 'Applying…'; el.className = 'small ms-2 text-muted'; }
+  try {
+    const res = await _postReapply();
+    if (!el) return;
+    if (res.ok && res.data.ok) {
+      el.textContent = `Applied (residual ${res.data.residual_max_px.toFixed(1)} px) — live on the next vehicle.`;
+      el.className   = 'small ms-2 text-success';
+    } else {
+      el.textContent = `Error: ${res.data.detail || res.status}`;
+      el.className   = 'small ms-2 text-danger';
+    }
+  } catch (err) {
+    if (el) { el.textContent = `Network error: ${err.message}`; el.className = 'small ms-2 text-danger'; }
+  }
 }
 
 function _onCanvasClick(e) {
+  if (_lensMode) return;            // tuning the lens, not picking corners
   if (_points.length >= 4) return;
 
   const rect   = _canvas.getBoundingClientRect();

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Vehicles — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <h5 class="mb-0">Vehicles <span class="text-muted small">({{ vehicles|length }} plates seen)</span></h5>
+  <button id="bf-btn" class="btn btn-sm btn-outline-secondary" onclick="backfill()">Backfill car images</button>
+  <span id="bf-status" class="small text-muted"></span>
+  <div class="ms-auto d-flex gap-2 align-items-center small">
+    <span class="text-muted">Sort:</span>
+    {% for key, label in [('max_mph','Top speed'), ('avg_mph','Avg speed'), ('passes','Most passes'), ('last_seen','Recent')] %}
+    <a href="/vehicles?order_by={{ key }}&min_passes={{ min_passes }}"
+       class="nav-link small py-0 {% if order_by==key %}active{% endif %}">{{ label }}</a>
+    {% endfor %}
+    <span class="text-muted ms-2">Min passes:</span>
+    {% for n in [1, 2, 3, 5] %}
+    <a href="/vehicles?order_by={{ order_by }}&min_passes={{ n }}"
+       class="nav-link small py-0 {% if min_passes==n %}active{% endif %}">{{ n }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if vehicles %}
+<div class="table-responsive">
+<table class="table table-hover table-sm align-middle">
+  <thead class="table-dark">
+    <tr>
+      <th>Car</th><th>Plate</th><th>Passes</th><th>Top mph</th><th>Avg mph</th>
+      <th>Last seen</th><th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for v in vehicles %}
+  <tr onclick="window.location='/vehicle/{{ v.plate }}'" style="cursor:pointer">
+    <td class="thumb">
+      {% if v.rep_image_path %}
+      <img src="/{{ v.rep_image_path }}" alt="car" loading="lazy"
+           onerror="this.outerHTML='<span class=text-muted>—</span>'">
+      {% else %}<span class="text-muted">—</span>{% endif %}
+    </td>
+    <td>
+      <span class="badge bg-dark border border-warning text-warning font-monospace fs-6">{{ v.plate }}</span>
+      {% if v.confirmed_speeder %}<span class="badge bg-danger" title="Confirmed speeder">🚨</span>{% endif %}
+    </td>
+    <td class="fw-bold">{{ v.passes }}</td>
+    <td><span class="fw-bold text-info">{{ fmt_mph(v.max_mph) }}</span></td>
+    <td class="text-muted">{{ fmt_mph(v.avg_mph) }}</td>
+    <td class="small text-muted text-nowrap">{{ fmt_ts(v.last_seen) }}</td>
+    <td class="small">
+      {% if v.user_description %}<span class="text-body">{{ v.user_description }}</span>
+      {% elif v.description %}<span class="text-muted fst-italic">{{ v.description }}</span>
+      {% else %}<span class="text-muted">—</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="text-muted small">Cars seen more than {{ describe_threshold }} times are auto-described by the local vision model. Click a row for details.</p>
+{% else %}
+<div class="alert alert-secondary">No plated vehicles recorded yet (need passes with a recognised number plate).</div>
+{% endif %}
+
+<script>
+async function backfill() {
+  const btn = document.getElementById('bf-btn'), st = document.getElementById('bf-status');
+  btn.disabled = true; st.textContent = 'Working… (running detection on stored stills, may take a minute)';
+  try {
+    const r = await fetch('/api/vehicles/backfill-images', {method:'POST'});
+    const d = await r.json();
+    st.textContent = `Done — ${d.updated} crops saved (${d.exact_matches} plate-matched) of ${d.total_missing} missing.`;
+    setTimeout(() => location.reload(), 1500);
+  } catch(e) { st.textContent = 'Failed: ' + e; btn.disabled = false; }
+}
+</script>
+{% endblock %}

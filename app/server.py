@@ -12,18 +12,24 @@ Routes:
 """
 from __future__ import annotations
 import asyncio
+import csv
+import io
 import logging
+import re
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import config, db
 from . import calibration as cal_mod
+from . import intrinsics as intr_mod
+from . import vehicles as vehicles_mod
 
 log = logging.getLogger(__name__)
 
@@ -133,12 +139,63 @@ async def _get_passes_for_session(session_id: int) -> list[dict]:
 @app.get("/calibrate", response_class=HTMLResponse)
 async def calibrate_page(request: Request):
     cals = await db.list_calibrations(config.CAMERA_NAME)
+    intrinsics = intr_mod.load(config.CAMERA_NAME)
+    try:
+        static_v = int((_STATIC_DIR / "calibrate.js").stat().st_mtime)
+    except OSError:
+        static_v = 0
     return templates.TemplateResponse("calibrate.html", {
         "request": request,
         "snapshot_url": f"/snapshot/{config.CAMERA_NAME}",
         "camera": config.CAMERA_NAME,
         "calibrations": cals,
+        "intrinsics": intrinsics,
+        "static_v": static_v,
         "queue_size": 0,
+    })
+
+
+@app.get("/vehicles", response_class=HTMLResponse)
+async def vehicles_page(request: Request, order_by: str = "max_mph", min_passes: int = 1):
+    vehicles = await db.list_vehicles(order_by=order_by, min_passes=min_passes)
+    return templates.TemplateResponse("vehicles.html", {
+        "request": request,
+        "vehicles": vehicles,
+        "order_by": order_by,
+        "min_passes": min_passes,
+        "describe_threshold": config.VEHICLE_MIN_PASSES,
+    })
+
+
+@app.get("/vehicle/{plate}", response_class=HTMLResponse)
+async def vehicle_detail(request: Request, plate: str):
+    # If this plate has been merged into another, show the canonical page.
+    canon = await db.canonical_plate(plate)
+    if canon != plate:
+        return RedirectResponse(url=f"/vehicle/{canon}", status_code=303)
+    vehicle = await db.get_vehicle(plate)
+    if vehicle is None:
+        raise HTTPException(status_code=404, detail="No passes recorded for that plate")
+    passes = await db.list_passes_for_plate(plate)
+    aliases = await db.aliases_of(plate)
+    others = [r["plate"] for r in await db.list_distinct_plates()]
+    suggestions = vehicles_mod.similar_plates(plate, others)
+    return templates.TemplateResponse("vehicle.html", {
+        "request": request,
+        "vehicle": vehicle,
+        "passes": passes,
+        "aliases": aliases,
+        "suggestions": suggestions,
+    })
+
+
+@app.get("/evidence", response_class=HTMLResponse)
+async def evidence_page(request: Request):
+    passes = await db.list_evidence_passes()
+    return templates.TemplateResponse("evidence.html", {
+        "request": request,
+        "passes": passes,
+        "total": len(passes),
     })
 
 
@@ -177,6 +234,9 @@ async def api_save_calibration(request: Request):
     if not zone_pixels or not edge_distances or diagonal_m is None:
         raise HTTPException(status_code=422, detail="Missing required calibration fields")
 
+    # Bake in lens intrinsics if this camera has been lens-calibrated (distortion correction).
+    intrinsics = intr_mod.load(camera)
+
     try:
         cal = cal_mod.build_calibration(
             camera=camera,
@@ -186,13 +246,54 @@ async def api_save_calibration(request: Request):
             frame_w=frame_w,
             frame_h=frame_h,
             notes=notes,
+            intrinsics=intrinsics,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     cal_id = await db.save_calibration(cal)
     return JSONResponse({"ok": True, "calibration_id": cal_id,
-                         "residual_max_px": cal["residual_max_px"]})
+                         "residual_max_px": cal["residual_max_px"],
+                         "lens_corrected": intrinsics is not None})
+
+
+@app.post("/api/calibration/reapply-lens")
+async def api_reapply_lens(request: Request):
+    """
+    Rebuild the active zone calibration from its stored corners + measurements, baking in
+    the current lens intrinsics. No re-clicking needed — the clicked corners are unchanged,
+    so this is identical to re-saving the same calibration with lens correction on.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    camera = body.get("camera", config.CAMERA_NAME)
+
+    active = await db.get_active_calibration(camera)
+    if active is None:
+        raise HTTPException(status_code=404, detail="No active zone calibration to re-apply to")
+    intrinsics = intr_mod.load(camera)
+    if intrinsics is None:
+        raise HTTPException(status_code=422, detail="No lens intrinsics saved for this camera")
+
+    try:
+        cal = cal_mod.build_calibration(
+            camera=camera,
+            zone_pixels_norm=active["zone_pixels"],
+            edge_distances_m=active["edge_distances_m"],
+            diagonal_m=active["diagonal_m"],
+            frame_w=active["frame_w"],
+            frame_h=active["frame_h"],
+            notes=active.get("notes") or "",
+            intrinsics=intrinsics,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    cal_id = await db.save_calibration(cal)
+    return JSONResponse({"ok": True, "calibration_id": cal_id,
+                         "residual_max_px": cal["residual_max_px"], "lens_corrected": True})
 
 
 _PASS_FILE_COLS = (
@@ -242,6 +343,197 @@ async def api_label_pass(
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/passes/{pass_id}/confirm")
+async def api_confirm_pass(pass_id: int, request: Request):
+    """Flag/unflag a single pass as confirmed-speeder evidence. Body: {confirmed: bool}."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    confirmed = bool(body.get("confirmed", True))
+    await db.set_pass_confirmed(pass_id, confirmed)
+    return JSONResponse({"ok": True, "confirmed": confirmed})
+
+
+@app.post("/api/vehicle/{plate}/confirm")
+async def api_confirm_vehicle(plate: str, request: Request):
+    """Flag/unflag a whole vehicle as a confirmed speeder. Body: {confirmed: bool}.
+    Every pass of the (canonical) vehicle then counts as evidence."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    confirmed = bool(body.get("confirmed", True))
+    canon = await db.canonical_plate(plate)
+    await db.set_vehicle_confirmed(canon, confirmed)
+    return JSONResponse({"ok": True, "confirmed": confirmed, "plate": canon})
+
+
+# ── Confirmed-speeder evidence export ──────────────────────────────────────────
+
+_EVIDENCE_COLS = [
+    ("evidence_no", "Evidence #"),
+    ("datetime", "Date / time"),
+    ("camera", "Camera"),
+    ("plate", "Plate"),
+    ("measured_mph", "Measured speed (mph)"),
+    ("corrected_mph", "Reviewed speed (mph)"),
+    ("confidence_pct", "System confidence (%)"),
+    ("dwell_seconds", "Time in zone (s)"),
+    ("frames_in_zone", "Frames measured"),
+    ("notes", "Reviewer notes"),
+    ("clip_file", "Video file"),
+    ("entry_image", "Entry still"),
+    ("exit_image", "Exit still"),
+]
+
+
+def _evidence_rows(passes: list[dict]) -> list[dict]:
+    """Flatten DB rows into manifest-friendly dicts (shared by CSV and ZIP)."""
+    rows = []
+    for i, p in enumerate(passes, start=1):
+        try:
+            dt = datetime.fromtimestamp(float(p["start_ts"])).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            dt = str(p.get("start_ts"))
+        rows.append({
+            "evidence_no": i,
+            "datetime": dt,
+            "camera": p.get("camera") or "",
+            "plate": p.get("canonical_plate") or p.get("plate") or "(no plate read)",
+            "measured_mph": f"{p['sw_speed_mph']:.1f}" if p.get("sw_speed_mph") is not None else "",
+            "corrected_mph": f"{p['user_corrected_mph']:.1f}" if p.get("user_corrected_mph") else "",
+            "confidence_pct": f"{(p.get('confidence') or 0) * 100:.0f}",
+            "dwell_seconds": f"{p.get('dwell_seconds') or 0:.2f}",
+            "frames_in_zone": p.get("frames_in_zone") or 0,
+            "notes": p.get("user_notes") or "",
+            "_clip": p.get("clip_path") or p.get("session_clip_path"),
+            "_entry": p.get("entry_frame_raw_path") or p.get("entry_frame_path"),
+            "_exit": p.get("exit_frame_raw_path") or p.get("exit_frame_path"),
+            "_traj": p.get("trajectory_overlay_path"),
+            "_car": p.get("car_crop_path"),
+            "_pass_id": p.get("id"),
+        })
+    return rows
+
+
+def _safe(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "", str(s)) or "x"
+
+
+def _build_evidence_zip(rows: list[dict]) -> bytes:
+    """Build an evidence ZIP: one folder per pass (clip + stills) + a manifest CSV."""
+    data_dir = Path(config.DATA_DIR)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        man = io.StringIO()
+        w = csv.writer(man)
+        w.writerow([label for _, label in _EVIDENCE_COLS])
+        for r in rows:
+            ts = r["datetime"].replace(":", "").replace("-", "").replace(" ", "_")
+            folder = f"{r['evidence_no']:03d}_{ts}_{_safe(r['plate'])}"
+            clip_file = entry_img = exit_img = ""
+            attachments = [("_clip", "clip"), ("_entry", "entry"),
+                           ("_exit", "exit"), ("_traj", "trajectory"), ("_car", "car")]
+            for key, label in attachments:
+                rel = r.get(key)
+                if not rel:
+                    continue
+                src = data_dir / rel
+                if not src.exists():
+                    continue
+                arc = f"{folder}/{label}{src.suffix}"
+                z.write(src, arc)
+                if key == "_clip":
+                    clip_file = arc
+                elif key == "_entry":
+                    entry_img = arc
+                elif key == "_exit":
+                    exit_img = arc
+            row_out = {**r, "clip_file": clip_file, "entry_image": entry_img, "exit_image": exit_img}
+            w.writerow([row_out.get(k, "") for k, _ in _EVIDENCE_COLS])
+        z.writestr("manifest.csv", man.getvalue())
+        z.writestr("README.txt",
+                   "Speedwatch confirmed-speeder evidence bundle.\n"
+                   "Each numbered folder contains the video clip and stills for one vehicle pass.\n"
+                   "manifest.csv lists every pass with date/time, plate, measured speed and file names.\n")
+    return buf.getvalue()
+
+
+@app.get("/api/evidence/export.csv")
+async def evidence_export_csv():
+    rows = _evidence_rows(await db.list_evidence_passes())
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow([label for _, label in _EVIDENCE_COLS])
+    for r in rows:
+        w.writerow([r.get(k, "") for k, _ in _EVIDENCE_COLS])
+    fname = f"speedwatch_evidence_{datetime.now():%Y%m%d}.csv"
+    return Response(content=out.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.get("/api/evidence/export.zip")
+async def evidence_export_zip():
+    rows = _evidence_rows(await db.list_evidence_passes())
+    if not rows:
+        raise HTTPException(status_code=404, detail="No confirmed-speeder passes to export")
+    # Zip building is blocking (file I/O + compression) — run off the event loop.
+    blob = await asyncio.to_thread(_build_evidence_zip, rows)
+    fname = f"speedwatch_evidence_{datetime.now():%Y%m%d}.zip"
+    return Response(content=blob, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.post("/api/vehicle/{plate}/meta")
+async def api_vehicle_meta(
+    plate: str,
+    user_description: str = Form(default=""),
+    user_notes: str = Form(default=""),
+):
+    await db.update_vehicle_meta(plate, user_description or None, user_notes or None)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/vehicle/{plate}/describe")
+async def api_vehicle_describe(plate: str):
+    """Manually (re)generate the AI vehicle description from its representative crop."""
+    desc = await vehicles_mod.describe(plate, force=True)
+    if desc is None:
+        raise HTTPException(status_code=503,
+                            detail="Vision model unavailable, or no car image for this plate yet")
+    return JSONResponse({"ok": True, "description": desc})
+
+
+@app.post("/api/vehicle/{plate}/merge")
+async def api_vehicle_merge(plate: str, request: Request):
+    """Group plates as one vehicle. Body: {canonical: str, aliases: [str, ...]}."""
+    body = await request.json()
+    canonical = (body.get("canonical") or plate).strip().upper()
+    aliases = [a.strip().upper() for a in body.get("aliases", []) if a.strip()]
+    if not canonical:
+        raise HTTPException(status_code=422, detail="canonical plate required")
+    root = await db.add_plate_aliases(canonical, aliases)
+    return JSONResponse({"ok": True, "canonical": root})
+
+
+@app.post("/api/vehicle/{plate}/unmerge")
+async def api_vehicle_unmerge(plate: str, request: Request):
+    """Remove one alias ({alias: str}) or all aliases of this canonical ({all: true})."""
+    body = await request.json()
+    if body.get("all"):
+        await db.unmerge_plate(plate)
+    elif body.get("alias"):
+        await db.remove_plate_alias(body["alias"].strip().upper())
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/vehicles/backfill-images")
+async def api_vehicles_backfill():
+    """Re-derive + save car crops for plated passes recorded before car_crop_path existed."""
+    return JSONResponse(await vehicles_mod.backfill_car_images())
+
+
 @app.get("/api/status")
 async def api_status():
     from . import detect
@@ -255,33 +547,99 @@ async def api_status():
 
 # ── Snapshot endpoint (live frame via ffmpeg) ──────────────────────────────────
 
-@app.get("/snapshot/{camera}")
-async def snapshot(camera: str):
-    """Grab one JPEG frame from the RTSPS substream."""
+async def _grab_snapshot_jpeg() -> bytes:
+    """Grab one JPEG frame from the camera stream via ffmpeg. Raises HTTPException on failure."""
+    cmd = [
+        config.FFMPEG_BIN,
+        "-loglevel", "error",
+        "-timeout", "5000000",
+        "-rtsp_transport", "tcp",
+        "-i", config.CAMERA_RTSP,
+        "-map", "0:v:0",
+        "-vframes", "1",
+        "-f", "image2",
+        "-vcodec", "mjpeg",
+        "pipe:1",
+    ]
     try:
-        rtsp_url = config.CAMERA_RTSP
-        cmd = [
-            config.FFMPEG_BIN,
-            "-loglevel", "error",
-            "-timeout", "5000000",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
-            "-map", "0:v:0",
-            "-vframes", "1",
-            "-f", "image2",
-            "-vcodec", "mjpeg",
-            "pipe:1",
-        ]
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-        if not stdout:
-            raise HTTPException(status_code=503, detail="No frame from camera")
-        return Response(content=stdout, media_type="image/jpeg")
     except asyncio.TimeoutError:
         raise HTTPException(status_code=503, detail="Camera snapshot timed out")
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Snapshot error: {e}")
+    if not stdout:
+        raise HTTPException(status_code=503, detail="No frame from camera")
+    return stdout
+
+
+@app.get("/snapshot/{camera}")
+async def snapshot(camera: str):
+    """Grab one JPEG frame from the RTSPS substream."""
+    return Response(content=await _grab_snapshot_jpeg(), media_type="image/jpeg")
+
+
+# ── Lens distortion tuner (manual plumb-line calibration) ──────────────────────
+# The snapshot used for tuning is cached so dragging the sliders re-warps the same frame
+# instead of re-hitting the camera each time. "refresh" forces a fresh grab.
+
+_lens_frame_cache: dict[str, "np.ndarray"] = {}
+
+
+async def _lens_frame(camera: str, refresh: bool = False):
+    import numpy as np
+    import cv2
+    arr = _lens_frame_cache.get(camera)
+    if arr is None or refresh:
+        jpeg = await _grab_snapshot_jpeg()
+        arr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if arr is None:
+            raise HTTPException(status_code=503, detail="Could not decode snapshot")
+        _lens_frame_cache[camera] = arr
+    return arr
+
+
+def _lens_K(k1: float, k2: float, f_frac: float, w: int, h: int):
+    import numpy as np
+    f = f_frac * w
+    K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float64)
+    dist = np.array([k1, k2, 0.0, 0.0, 0.0], dtype=np.float64)
+    return K, dist
+
+
+@app.get("/api/lens/preview")
+async def lens_preview(camera: str, k1: float = 0.0, k2: float = 0.0,
+                       f: float = 0.5, refresh: int = 0):
+    """Return the cached snapshot undistorted with the given parameters (downscaled JPEG)."""
+    import cv2
+    arr = await _lens_frame(camera, refresh=bool(refresh))
+    h, w = arr.shape[:2]
+    max_w = 1280
+    if w > max_w:
+        s = max_w / w
+        arr = cv2.resize(arr, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+        h, w = arr.shape[:2]
+    K, dist = _lens_K(k1, k2, f, w, h)   # f_frac is resolution-independent
+    und = cv2.undistort(arr, K, dist)
+    ok, buf = cv2.imencode(".jpg", und, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise HTTPException(status_code=500, detail="encode failed")
+    return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
+@app.post("/api/lens/save")
+async def lens_save(camera: str, request: Request):
+    """Persist manually-tuned lens intrinsics (at the full snapshot resolution)."""
+    body = await request.json()
+    k1 = float(body.get("k1", 0.0))
+    k2 = float(body.get("k2", 0.0))
+    f_frac = float(body.get("f", 0.5))
+    arr = await _lens_frame(camera)
+    h, w = arr.shape[:2]
+    intr = intr_mod.build_manual(camera, k1, k2, f_frac, w, h)
+    path = intr_mod.save(camera, intr)
+    log.info("Saved manual lens intrinsics for %s (k1=%.4f k2=%.4f f=%.3f) → %s",
+             camera, k1, k2, f_frac, path)
+    return JSONResponse({"ok": True, "image_w": w, "image_h": h})

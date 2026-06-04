@@ -18,6 +18,25 @@ from .speed import PassResult
 log = logging.getLogger(__name__)
 
 
+def save_car_crop(frame_bgr: np.ndarray | None, bbox_xyxy, session_id: str,
+                  track_id: int, pad: int = 20) -> str | None:
+    """Save a cropped image of just the car (for plate context + vehicle vision description)."""
+    if frame_bgr is None or bbox_xyxy is None:
+        return None
+    h, w = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = bbox_xyxy
+    cx1 = max(0, int(x1) - pad); cy1 = max(0, int(y1) - pad)
+    cx2 = min(w, int(x2) + pad); cy2 = min(h, int(y2) + pad)
+    if cx2 - cx1 < 16 or cy2 - cy1 < 16:
+        return None
+    frames_dir = Path(config.DATA_DIR) / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{session_id}_{track_id}_car.jpg"
+    cv2.imwrite(str(frames_dir / name), frame_bgr[cy1:cy2, cx1:cx2],
+                [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return f"frames/{name}"
+
+
 def save_pass_stills(result: PassResult, session_id: str) -> dict[str, str | None]:
     frames_dir = Path(config.DATA_DIR) / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)

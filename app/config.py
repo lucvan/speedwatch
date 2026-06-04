@@ -56,11 +56,30 @@ ALPR_OCR_MODEL      = os.getenv("ALPR_OCR_MODEL", "european-plates-mobile-vit-v2
 ALPR_MIN_CONF       = float(os.getenv("ALPR_MIN_CONF", "0.6"))   # mean per-char OCR confidence
 ALPR_CROP_PAD       = int(os.getenv("ALPR_CROP_PAD", "12"))      # px padding around car bbox
 
+# Vehicle vision-description (local Ollama multimodal model). For plates seen more than
+# VEHICLE_MIN_PASSES times, describe the car (colour/make/body) from its best car crop.
+# Runs locally so neighbours' vehicle data never leaves the box.
+OLLAMA_URL           = os.getenv("OLLAMA_URL", "http://localhost:11434")
+VEHICLE_VISION_MODEL = os.getenv("VEHICLE_VISION_MODEL", "llama3.2-vision:11b")
+VEHICLE_AUTODESCRIBE = os.getenv("VEHICLE_AUTODESCRIBE", "1") not in ("0", "false", "False", "")
+VEHICLE_MIN_PASSES   = int(os.getenv("VEHICLE_MIN_PASSES", "3"))        # describe when passes > this
+VEHICLE_VISION_TIMEOUT = float(os.getenv("VEHICLE_VISION_TIMEOUT", "180"))
+VEHICLE_VISION_PROMPT = os.getenv(
+    "VEHICLE_VISION_PROMPT",
+    "Describe this vehicle in one concise line: colour, make and model if identifiable, "
+    "and body type (hatchback, saloon, estate, SUV, van, etc.). If unsure of make/model, say so.",
+)
+# Max soft edit-distance for suggesting two plates are the same car (OCR-confusable subs cost 0.4).
+ALIAS_SUGGEST_MAXDIST = float(os.getenv("ALIAS_SUGGEST_MAXDIST", "1.5"))
+
 # Storage
 DATA_DIR   = os.getenv("DATA_DIR", str(Path(__file__).parent.parent / "data"))
 INSTALL_DIR = str(Path(__file__).parent.parent)
 
 # Server
+# Bind address. Default 127.0.0.1 (localhost only). Set HOST=0.0.0.0 to expose the UI to
+# other devices on the LAN (also needs a Windows firewall rule allowing inbound TCP on PORT).
+HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8765"))
 
 # Per-stage timing profiler — logs avg ms per pipeline stage every PROFILE_FLUSH_S seconds.

@@ -101,6 +101,10 @@
     </td>
     <td class="text-nowrap">
       <a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0">View</a>
+      <button class="btn btn-sm py-0 {{ 'btn-danger' if p.confirmed_speeder else 'btn-outline-danger' }}"
+              data-on="{{ 1 if p.confirmed_speeder else 0 }}"
+              title="Flag as confirmed speeder evidence"
+              onclick="confirmPass({{ p.id }}, this)">{{ '🚨' if p.confirmed_speeder else 'Flag' }}</button>
       <button class="btn btn-sm btn-outline-danger py-0"
               onclick="deleteSession({{ p.session_id }}, this)">Del</button>
     </td>
@@ -136,6 +140,18 @@ async function deleteSession(id, btn) {
   const r = await fetch('/api/sessions/' + id, {method: 'DELETE'});
   if (r.ok) btn.closest('tr').remove();
   else alert('Delete failed: ' + await r.text());
+}
+async function confirmPass(id, btn) {
+  const makeOn = btn.dataset.on !== '1';
+  const r = await fetch('/api/passes/' + id + '/confirm', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({confirmed: makeOn})
+  });
+  if (!r.ok) { alert('Failed: ' + await r.text()); return; }
+  btn.dataset.on = makeOn ? '1' : '0';
+  btn.textContent = makeOn ? '🚨' : 'Flag';
+  btn.classList.toggle('btn-danger', makeOn);
+  btn.classList.toggle('btn-outline-danger', !makeOn);
 }
 </script>
 {% endblock %}
