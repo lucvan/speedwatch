@@ -98,6 +98,29 @@ UI: <http://localhost:8765>
 The model weights, `.venv`, and `ffmpeg.exe`/`ffprobe.exe` are **not** in the repo
 (see `.gitignore`); `bootstrap.ps1` fetches them so a clean clone is fully deployable.
 
+## Web UI
+
+The UI (`:8765`) is organised around a left sidebar, with a **light/dark toggle** (persisted
+per browser). Speeds are **colour-banded** throughout — green below the warn threshold, amber
+up to the limit, red over it (`SPEED_WARN_MPH` / `SPEED_LIMIT_MPH`) — so a fast pass stands
+out at a glance.
+
+- **Dashboard** — landing page: headline stats (passes today, fastest today, over-limit
+  count, vehicles tracked, confirmed speeders), a *needs-attention* work queue (plateless
+  passes, visual clusters to merge, low-confidence reviews), a top-vehicle leaderboard, and a
+  recent-passes strip.
+- **Passes** — every pass, grouped by day with relative timestamps; filter by label, minimum
+  speed, or plateless-only; flag a pass as evidence inline.
+- **Vehicles** — per-plate registry with top/average speed and description; sort, or filter to
+  confirmed speeders.
+- **Vehicle page** — stats, representative image, AI description, plate grouping
+  (similar-plate + visually-similar merge candidates), and the vehicle's pass history.
+- **Unidentified** — plateless passes clustered by appearance for promotion/merge.
+- **Review** — low-confidence unlabelled passes for quick triage.
+- **Evidence** — confirmed-speeder passes with ZIP/CSV export.
+- **Calibrate** — lens + zone calibration (see [Calibration](#calibration)).
+- **Settings** — read-only view of the running configuration.
+
 ## Configuration (`.env`)
 
 | Key | Meaning |
@@ -111,6 +134,8 @@ The model weights, `.venv`, and `ffmpeg.exe`/`ffprobe.exe` are **not** in the re
 | `OBJECT_CLASSES` | Comma-separated COCO classes to track (`car,truck,bus`) |
 | `DETECT_FPS` | Inference frame rate |
 | `MIN_DT_SECONDS` | Minimum track interval used in speed estimation |
+| `SPEED_LIMIT_MPH` | Legal limit; speeds above it band **red** in the UI (default `20`) |
+| `SPEED_WARN_MPH` | Amber-band lower bound; at/above this up to the limit bands **amber** (default `16`) |
 | `DATA_DIR` | Where clips, logs, and the SQLite DB are written |
 | `PORT` | Web UI / API port (default `8765`) |
 | `HOST` | Bind address — `127.0.0.1` (localhost) or `0.0.0.0` (LAN, needs firewall rule) |
