@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
-  <h5 class="mb-0">🚨 Confirmed speeders <span class="badge bg-danger">{{ total }}</span></h5>
+  <h4 class="mb-0">🚨 Confirmed speeders <span class="badge bg-danger align-middle">{{ total }}</span></h4>
   <div class="ms-auto d-flex gap-2">
     <a href="/api/evidence/export.zip" class="btn btn-sm btn-danger {% if not total %}disabled{% endif %}">
       ⬇ Download evidence bundle (.zip)
@@ -38,12 +38,12 @@
       {% elif p.entry_frame_path %}<a href="/session/{{ p.session_id }}"><img src="/{{ p.entry_frame_path }}" loading="lazy"></a>
       {% else %}<a href="/session/{{ p.session_id }}" class="small">view</a>{% endif %}
     </td>
-    <td class="small text-nowrap">{{ fmt_ts(p.start_ts) }}</td>
-    <td><span class="fw-bold text-info">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="text-muted small">mph</span></td>
+    <td class="small text-nowrap" title="{{ fmt_ago(p.start_ts) }}">{{ fmt_ts(p.start_ts) }}</td>
+    <td><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted small">mph</span></td>
     <td>
       {% if p.canonical_plate %}
       <a href="/vehicle/{{ p.canonical_plate }}">
-        <span class="badge bg-dark border border-warning text-warning font-monospace">{{ p.canonical_plate }}</span></a>
+        <span class="badge plate-badge">{{ p.canonical_plate }}</span></a>
       {% else %}<span class="text-muted small">—</span>{% endif %}
     </td>
     <td><span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span></td>
@@ -66,7 +66,7 @@
 </div>
 {% else %}
 <div class="alert alert-secondary">
-  No confirmed speeders yet. Flag a pass from its <a href="/">session</a>, or flag a whole
+  No confirmed speeders yet. Flag a pass from its <a href="/passes">session</a>, or flag a whole
   vehicle from its <a href="/vehicles">vehicle page</a>, and it'll appear here for export.
 </div>
 {% endif %}

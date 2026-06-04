@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="d-flex align-items-center mb-3 gap-3">
-  <h5 class="mb-0">Low-confidence unlabelled passes <span class="badge bg-secondary">{{ total }}</span></h5>
+  <h4 class="mb-0">Review <span class="badge bg-secondary align-middle">{{ total }}</span></h4>
   <span class="text-muted small">(confidence ≤ 40%, no label)</span>
 </div>
 
@@ -32,8 +32,8 @@
       </a>
       {% else %}—{% endif %}
     </td>
-    <td class="text-nowrap small">{{ fmt_ts(p.start_ts) }}</td>
-    <td><span class="fw-bold text-info">{{ fmt_mph(p.sw_speed_mph) }}</span> mph</td>
+    <td class="text-nowrap small" title="{{ fmt_ts(p.start_ts) }}">{{ fmt_ago(p.start_ts) }}</td>
+    <td><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted small">mph</span></td>
     <td>
       <span class="conf-badge bg-{{ confidence_class(p.confidence) }}">
         {{ "%.0f"|format(p.confidence * 100) }}%

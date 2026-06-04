@@ -19,7 +19,7 @@
     </div>
   </div>
   <div class="col-auto d-flex gap-2">
-    <a href="/" class="btn btn-sm btn-outline-secondary">← Back</a>
+    <a href="/passes" class="btn btn-sm btn-outline-secondary">← Back</a>
     <button class="btn btn-sm btn-outline-danger"
             onclick="deleteSession({{ session.id }})">Delete session</button>
   </div>
@@ -38,9 +38,9 @@
 <div class="card mb-4">
   <div class="card-header small d-flex align-items-center gap-3">
     <span class="fw-bold">Track #{{ p.track_id }}</span>
-    <span class="fw-bold text-info fs-5">{{ fmt_mph(p.sw_speed_mph) }} mph</span>
+    <span class="spd spd-{{ speed_band(p.sw_speed_mph) }} fs-5">{{ fmt_mph(p.sw_speed_mph) }} <span class="unit">mph</span></span>
     {% if p.plate %}
-    <span class="badge bg-dark border border-warning text-warning fs-6 font-monospace"
+    <span class="badge plate-badge fs-6"
           title="OCR confidence {{ '%.0f'|format((p.plate_confidence or 0) * 100) }}%">{{ p.plate }}</span>
     {% endif %}
     <span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span>
@@ -53,42 +53,29 @@
     </button>
   </div>
   <div class="card-body">
-    {% if p.entry_frame_raw_path or p.exit_frame_raw_path %}
+    <!-- Evidence stills: entry/exit shown once at full res; trajectory overlay as a smaller inset. -->
+    {% set entry_img = p.entry_frame_raw_path or p.entry_frame_path %}
+    {% set exit_img  = p.exit_frame_raw_path  or p.exit_frame_path %}
     <div class="row g-2 mb-3">
-      {% if p.entry_frame_raw_path %}
+      {% if entry_img %}
       <div class="col-12 col-md-6">
-        <div class="text-muted small mb-1">Entry (full res)</div>
-        <img src="/{{ p.entry_frame_raw_path }}" style="width:100%;border-radius:4px;display:block">
+        <div class="text-muted small mb-1">Entry</div>
+        <img src="/{{ entry_img }}" class="crop-top" style="width:100%;height:300px;border-radius:4px;display:block">
       </div>
       {% endif %}
-      {% if p.exit_frame_raw_path %}
+      {% if exit_img %}
       <div class="col-12 col-md-6">
-        <div class="text-muted small mb-1">Exit (full res)</div>
-        <img src="/{{ p.exit_frame_raw_path }}" style="width:100%;border-radius:4px;display:block">
+        <div class="text-muted small mb-1">Exit</div>
+        <img src="/{{ exit_img }}" class="crop-top" style="width:100%;height:300px;border-radius:4px;display:block">
       </div>
       {% endif %}
+    </div>
+    {% if p.trajectory_overlay_path %}
+    <div class="mb-3">
+      <div class="text-muted small mb-1">Trajectory</div>
+      <img src="/{{ p.trajectory_overlay_path }}" style="max-height:200px;border-radius:4px;display:block">
     </div>
     {% endif %}
-    <div class="row g-2 mb-3">
-      {% if p.trajectory_overlay_path %}
-      <div class="col-auto">
-        <div class="text-muted small mb-1">Trajectory</div>
-        <img src="/{{ p.trajectory_overlay_path }}" style="max-height:160px;border-radius:4px">
-      </div>
-      {% endif %}
-      {% if p.entry_frame_path %}
-      <div class="col-auto">
-        <div class="text-muted small mb-1">Entry</div>
-        <img src="/{{ p.entry_frame_path }}" style="max-height:160px;border-radius:4px">
-      </div>
-      {% endif %}
-      {% if p.exit_frame_path %}
-      <div class="col-auto">
-        <div class="text-muted small mb-1">Exit</div>
-        <img src="/{{ p.exit_frame_path }}" style="max-height:160px;border-radius:4px">
-      </div>
-      {% endif %}
-    </div>
 
     <form method="post" action="/api/passes/{{ p.id }}/label" class="row g-2 align-items-end">
       <div class="col-auto">
@@ -159,7 +146,7 @@
 async function deleteSession(id) {
   if (!confirm('Delete session #' + id + ', its clip, and all stills?')) return;
   const r = await fetch('/api/sessions/' + id, {method: 'DELETE'});
-  if (r.ok) window.location.href = '/';
+  if (r.ok) window.location.href = '/passes';
   else alert('Delete failed: ' + await r.text());
 }
 async function deletePass(id, btn) {

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Settings — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <h4 class="mb-0">Settings</h4>
+  <span class="text-muted small">read-only — edit <code>.env</code> and restart the service to change</span>
+</div>
+
+<div class="row g-3">
+  {% for title, items in groups %}
+  <div class="col-12 col-lg-6">
+    <div class="card h-100">
+      <div class="card-header small">{{ title }}</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+          <tbody>
+          {% for label, value in items %}
+          <tr>
+            <td class="text-muted small" style="width:45%">{{ label }}</td>
+            <td class="small"><code>{{ value }}</code></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<p class="text-muted small mt-3">
+  Calibration (lens + zone) is managed on the <a href="/calibrate">Calibrate</a> page.
+  Speed banding thresholds (<code>SPEED_LIMIT_MPH</code>, <code>SPEED_WARN_MPH</code>) and all other
+  values come from the local <code>.env</code>.
+</p>
+{% endblock %}

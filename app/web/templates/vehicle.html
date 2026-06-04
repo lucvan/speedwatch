@@ -4,7 +4,7 @@
 {% block content %}
 <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
   <a href="/vehicles" class="btn btn-sm btn-outline-secondary">← Vehicles</a>
-  <span class="badge bg-dark border border-warning text-warning font-monospace fs-4">{{ vehicle.plate }}</span>
+  <span class="badge plate-badge fs-4">{{ vehicle.plate }}</span>
   <button class="btn btn-sm ms-auto {{ 'btn-danger' if vehicle.confirmed_speeder else 'btn-outline-danger' }}"
           data-on="{{ 1 if vehicle.confirmed_speeder else 0 }}"
           onclick="confirmVehicle(this)"
@@ -20,26 +20,32 @@
 {% endif %}
 
 <div class="row g-3 mb-4">
-  <div class="col-12 col-md-4">
+  <!-- Rep image (fixed hero) -->
+  <div class="col-12 col-md-auto">
     {% if vehicle.rep_image_path %}
-    <img src="/{{ vehicle.rep_image_path }}" style="width:100%;border-radius:6px" alt="car">
+    <img src="/{{ vehicle.rep_image_path }}" alt="car" class="crop-top"
+         style="width:100%;max-width:320px;height:200px;border-radius:8px">
     {% else %}
-    <div class="alert alert-secondary mb-0">No car image yet.</div>
+    <div class="d-flex align-items-center justify-content-center text-muted"
+         style="width:320px;max-width:100%;height:200px;background:#1a1a28;border-radius:8px">No car image yet</div>
     {% endif %}
   </div>
-  <div class="col-12 col-md-8">
+
+  <div class="col">
+    <!-- Stat tiles -->
     <div class="row g-2 mb-3">
-      <div class="col-auto"><div class="card"><div class="card-body py-2 px-3">
-        <div class="text-muted small">Passes</div><div class="fs-4 fw-bold">{{ vehicle.passes }}</div></div></div></div>
-      <div class="col-auto"><div class="card"><div class="card-body py-2 px-3">
-        <div class="text-muted small">Top speed</div><div class="fs-4 fw-bold text-info">{{ fmt_mph(vehicle.max_mph) }} mph</div></div></div></div>
-      <div class="col-auto"><div class="card"><div class="card-body py-2 px-3">
-        <div class="text-muted small">Average</div><div class="fs-4 fw-bold">{{ fmt_mph(vehicle.avg_mph) }} mph</div></div></div></div>
-      <div class="col-auto"><div class="card"><div class="card-body py-2 px-3">
-        <div class="text-muted small">Slowest</div><div class="fs-4 fw-bold">{{ fmt_mph(vehicle.min_mph) }} mph</div></div></div></div>
+      <div class="col-6 col-sm-3"><div class="stat-card">
+        <div class="label">Passes</div><div class="value">{{ vehicle.passes }}</div></div></div>
+      <div class="col-6 col-sm-3"><div class="stat-card">
+        <div class="label">Top speed</div>
+        <div class="value spd-{{ speed_band(vehicle.max_mph) }}">{{ fmt_mph(vehicle.max_mph) }}<span class="unit"> mph</span></div></div></div>
+      <div class="col-6 col-sm-3"><div class="stat-card">
+        <div class="label">Average</div><div class="value">{{ fmt_mph(vehicle.avg_mph) }}<span class="unit"> mph</span></div></div></div>
+      <div class="col-6 col-sm-3"><div class="stat-card">
+        <div class="label">Slowest</div><div class="value">{{ fmt_mph(vehicle.min_mph) }}<span class="unit"> mph</span></div></div></div>
     </div>
     <div class="small text-muted mb-3">
-      First seen {{ fmt_ts(vehicle.first_seen) }} &nbsp;·&nbsp; Last seen {{ fmt_ts(vehicle.last_seen) }}
+      First seen {{ fmt_ts(vehicle.first_seen) }} &nbsp;·&nbsp; Last seen {{ fmt_ts(vehicle.last_seen) }} ({{ fmt_ago(vehicle.last_seen) }})
     </div>
 
     <div class="mb-2">
@@ -50,39 +56,45 @@
     </div>
 
     <form method="post" action="/api/vehicle/{{ vehicle.plate }}/meta" onsubmit="return saveMeta(event)" class="mt-3">
-      <div class="mb-2">
-        <label class="form-label small mb-1">Your description</label>
-        <input type="text" name="user_description" class="form-control form-control-sm"
-               value="{{ vehicle.user_description or '' }}" placeholder="e.g. neighbour's silver Golf">
+      <div class="row g-2">
+        <div class="col-12 col-lg-5">
+          <label class="form-label small mb-1">Your description</label>
+          <input type="text" name="user_description" class="form-control form-control-sm"
+                 value="{{ vehicle.user_description or '' }}" placeholder="e.g. neighbour's silver Golf">
+        </div>
+        <div class="col-12 col-lg-7">
+          <label class="form-label small mb-1">Notes / metadata</label>
+          <input type="text" name="user_notes" class="form-control form-control-sm"
+                 value="{{ vehicle.user_notes or '' }}" placeholder="any details to remember">
+        </div>
       </div>
-      <div class="mb-2">
-        <label class="form-label small mb-1">Notes / metadata</label>
-        <textarea name="user_notes" class="form-control form-control-sm" rows="2"
-                  placeholder="any details to remember">{{ vehicle.user_notes or '' }}</textarea>
-      </div>
-      <button class="btn btn-sm btn-primary">Save details</button>
+      <button class="btn btn-sm btn-primary mt-2">Save details</button>
       <span id="meta-status" class="small text-muted ms-2"></span>
     </form>
   </div>
 </div>
 
+<!-- ── Identity / grouping ── -->
 <div class="card mb-4">
-  <div class="card-header small">Plate grouping &nbsp;<span class="text-muted">— fix OCR splits / group the same car</span></div>
+  <div class="card-header small">Identity &amp; grouping <span class="text-muted">— fix OCR splits and group the same car</span></div>
   <div class="card-body">
     {% if aliases %}
     <div class="mb-3 small">
-      <span class="text-muted">Grouped plates (counted as this car):</span>
+      <span class="text-muted">Grouped plates (all counted as this car):</span>
       {% for a in aliases %}
       <span class="badge bg-secondary font-monospace ms-1">{{ a }}
         <a href="#" onclick="unmerge('{{ a }}');return false" class="text-warning ms-1" title="ungroup">×</a></span>
       {% endfor %}
       <button class="btn btn-sm btn-outline-secondary py-0 ms-2" onclick="unmergeAll()">Ungroup all</button>
     </div>
+    <hr style="border-color:#2a2a3a">
     {% endif %}
 
+    <!-- Similar plates -->
+    <div class="small fw-bold mb-1" style="color:#cfe8ff">Similar plates (OCR look-alikes)</div>
     {% if suggestions %}
-    <div class="small text-muted mb-1">Possible same car — tick any that match, set the correct plate, then Merge.
-      <span class="badge bg-info text-dark">same car?</span> = appearance (colour/make/model) also matches.</div>
+    <div class="small text-muted mb-2">Tick any that are the same car.
+      <span class="badge bg-info text-dark">same car?</span> = appearance also matches.</div>
     <div class="d-flex flex-wrap gap-3 mb-2">
       {% for s in suggestions %}
       <label class="d-flex align-items-center gap-1" title="{{ s.description or 'no description' }}">
@@ -95,33 +107,34 @@
       {% endfor %}
     </div>
     {% else %}
-    <div class="small text-muted mb-2">No similar plates found to suggest.</div>
+    <div class="small text-muted mb-3">No similar plates found.</div>
     {% endif %}
 
-    <div class="small text-muted mb-1 mt-3">
-      Visually similar vehicles <span class="badge bg-info text-dark">Re-ID</span>
-      — closest-looking cars by appearance (any plate); tick to include in a merge.
-      A <span class="badge bg-success">strong</span> badge means it clears the same-car threshold.
-    </div>
+    <!-- Visually similar (Re-ID) -->
+    <div class="small fw-bold mb-1 mt-3" style="color:#cfe8ff">Visually similar cars
+      <span class="badge bg-info text-dark">Re-ID</span></div>
     {% if not reid_available %}
     <div class="small text-muted mb-2">Re-ID model not installed — visual matching disabled.</div>
     {% elif visual %}
+    <div class="small text-muted mb-2">Closest-looking cars by appearance (any plate).
+      A <span class="badge bg-success">strong</span> badge clears the same-car threshold. Tick to include in a merge.</div>
     <div class="d-flex flex-wrap gap-3 mb-2">
       {% for s in visual %}
-      <label class="d-flex flex-column align-items-center gap-1" style="cursor:pointer" title="cosine similarity {{ s.sim }}">
+      <label class="cand-thumb d-flex flex-column align-items-center gap-1" style="cursor:pointer" title="cosine similarity {{ s.sim }}">
         <input type="checkbox" class="merge-cb" value="{{ s.plate }}">
-        {% if s.rep_image %}<img src="/{{ s.rep_image }}" style="height:64px;border-radius:4px" loading="lazy">{% else %}<span class="text-muted small">no image</span>{% endif %}
-        <a href="/vehicle/{{ s.plate }}"><span class="badge bg-dark border {{ 'border-success' if s.strong else 'border-info' }} font-monospace">{{ s.plate }}</span></a>
+        {% if s.rep_image %}<img src="/{{ s.rep_image }}" loading="lazy">{% else %}<span class="text-muted small">no image</span>{% endif %}
+        <a href="/vehicle/{{ s.plate }}" onclick="event.stopPropagation()"><span class="badge bg-dark border {{ 'border-success' if s.strong else 'border-info' }} font-monospace">{{ s.plate }}</span></a>
         <span class="text-muted" style="font-size:.65rem">
           sim {{ s.sim }}{% if s.strong %} <span class="badge bg-success">strong</span>{% endif %}</span>
       </label>
       {% endfor %}
     </div>
     {% else %}
-    <div class="small text-muted mb-2">No visually similar vehicles found (closest are below the display floor).</div>
+    <div class="small text-muted mb-2">No visually similar vehicles found.</div>
     {% endif %}
 
-    <div class="d-flex align-items-center gap-2">
+    <hr style="border-color:#2a2a3a">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
       <label class="small text-muted mb-0">Correct plate:</label>
       <input id="canonical" class="form-control form-control-sm font-monospace" style="width:140px"
              value="{{ vehicle.plate }}">
@@ -136,22 +149,21 @@
 <div class="table-responsive">
 <table class="table table-hover table-sm align-middle">
   <thead class="table-dark">
-    <tr><th>Thumb</th><th>Time</th><th>Speed</th><th>Plate conf</th><th>Conf</th><th>Label</th><th></th></tr>
+    <tr><th style="width:1%">Thumb</th><th>When</th><th class="text-end">Speed</th><th class="text-end">Plate conf</th><th>Conf</th><th>Label</th><th></th></tr>
   </thead>
   <tbody>
   {% for p in passes %}
-  <tr>
-    <td class="thumb">
-      {% if p.car_crop_path %}<a href="/session/{{ p.session_id }}"><img src="/{{ p.car_crop_path }}" loading="lazy"></a>
-      {% elif p.entry_frame_path %}<a href="/session/{{ p.session_id }}"><img src="/{{ p.entry_frame_path }}" loading="lazy"></a>
-      {% else %}<a href="/session/{{ p.session_id }}" class="small">view</a>{% endif %}
+  <tr onclick="window.location='/session/{{ p.session_id }}'" style="cursor:pointer">
+    <td class="thumb-car">
+      {% set img = p.car_crop_path or p.entry_frame_path %}
+      {% if img %}<img src="/{{ img }}" loading="lazy">{% else %}<span class="text-muted small">—</span>{% endif %}
     </td>
-    <td class="small text-nowrap">{{ fmt_ts(p.start_ts) }}</td>
-    <td><span class="fw-bold text-info">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="text-muted small">mph</span></td>
-    <td class="small text-muted">{{ "%.0f"|format((p.plate_confidence or 0) * 100) }}%</td>
+    <td class="small text-nowrap" title="{{ fmt_ts(p.start_ts) }}">{{ fmt_ago(p.start_ts) }}</td>
+    <td class="text-end"><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted small">mph</span></td>
+    <td class="text-end small text-muted">{{ "%.0f"|format((p.plate_confidence or 0) * 100) }}%</td>
     <td><span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span></td>
     <td>{% if p.user_label %}<span class="badge badge-label-{{ p.user_label }}">{{ p.user_label|replace('_',' ') }}</span>{% else %}<span class="text-muted small">—</span>{% endif %}</td>
-    <td><a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0">View</a></td>
+    <td><a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0" onclick="event.stopPropagation()">View</a></td>
   </tr>
   {% endfor %}
   </tbody>
@@ -190,7 +202,6 @@ async function confirmVehicle(btn) {
 async function mergePlates() {
   const canonical = document.getElementById('canonical').value.trim().toUpperCase();
   const checked = Array.from(document.querySelectorAll('.merge-cb:checked')).map(c => c.value);
-  // aliases = the ticked plates plus the current plate if it isn't the canonical
   const aliases = checked.slice();
   if (CURRENT !== canonical) aliases.push(CURRENT);
   if (!aliases.length) { document.getElementById('merge-status').textContent = 'Nothing selected'; return; }

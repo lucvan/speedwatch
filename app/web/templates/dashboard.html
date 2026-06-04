@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Speedwatch — Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <h4 class="mb-0">Dashboard</h4>
+  <span class="text-muted small">Limit {{ SPEED_LIMIT_MPH|int }} mph · amber from {{ SPEED_WARN_MPH|int }} mph</span>
+  <a href="/passes" class="btn btn-sm btn-outline-info ms-auto">All passes →</a>
+</div>
+
+{% if not has_calibration %}
+<div class="alert alert-warning py-2">
+  No active calibration set up yet.
+  <a href="/calibrate">Set up calibration</a> before the pipeline can measure speeds.
+</div>
+{% endif %}
+
+<!-- ── Headline stats ── -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg">
+    <div class="stat-card">
+      <div class="label">Passes today</div>
+      <div class="value">{{ stats.passes_today }}</div>
+      <div class="sub">{{ stats.total_passes }} all time</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="stat-card">
+      <div class="label">Fastest today</div>
+      <div class="value spd-{{ speed_band(stats.fastest_today) or 'ok' }}">
+        {{ fmt_mph(stats.fastest_today) }}<span class="unit"> mph</span></div>
+      <div class="sub">{{ fmt_mph(stats.fastest_all) }} mph record</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="stat-card">
+      <div class="label">Over limit today</div>
+      <div class="value {{ 'spd-over' if stats.over_today else '' }}">{{ stats.over_today }}</div>
+      <div class="sub">&gt; {{ SPEED_LIMIT_MPH|int }} mph</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="stat-card">
+      <div class="label">Vehicles tracked</div>
+      <div class="value">{{ stats.vehicles_total }}</div>
+      <div class="sub"><a href="/vehicles">browse →</a></div>
+    </div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="stat-card">
+      <div class="label">Confirmed speeders</div>
+      <div class="value {{ 'spd-over' if stats.confirmed_vehicles else '' }}">{{ stats.confirmed_vehicles }}</div>
+      <div class="sub"><a href="/evidence">{{ stats.evidence_total }} evidence passes →</a></div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- ── Needs attention ── -->
+  <div class="col-12 col-xl-5">
+    <div class="card h-100">
+      <div class="card-header small">Needs your attention</div>
+      <div class="card-body py-2">
+        {% set tasks = [
+          ('Passes with no plate', stats.plateless, '/passes?plateless=1', 'identify or group these'),
+          ('Visual clusters to merge', stats.needing_embedding, '/unidentified', 'plateless cars grouped by appearance'),
+          ('Low-confidence to review', stats.low_conf_unlabelled, '/review', 'unlabelled passes under 40% confidence')
+        ] %}
+        {% set pending = tasks | selectattr('1') | list %}
+        {% if pending %}
+        <ul class="list-unstyled mb-0">
+          {% for label, n, href, hint in tasks %}{% if n %}
+          <li class="d-flex align-items-center gap-2 py-2 border-bottom" style="border-color:#2a2a3a !important">
+            <span class="badge bg-warning text-dark" style="min-width:2.2rem">{{ n }}</span>
+            <span><a href="{{ href }}" class="text-decoration-none">{{ label }}</a>
+              <div class="text-muted" style="font-size:.72rem">{{ hint }}</div></span>
+          </li>
+          {% endif %}{% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-muted py-3 text-center">✓ All caught up — nothing waiting for review.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Repeat-offender leaderboard ── -->
+  <div class="col-12 col-xl-7">
+    <div class="card h-100">
+      <div class="card-header small d-flex">
+        <span>Top vehicles by speed</span>
+        <a href="/vehicles" class="ms-auto small">all vehicles →</a>
+      </div>
+      <div class="card-body p-0">
+        {% if leaders %}
+        <table class="table table-hover table-sm align-middle mb-0">
+          <tbody>
+          {% for v in leaders %}
+          <tr onclick="window.location='/vehicle/{{ v.plate }}'" style="cursor:pointer">
+            <td class="thumb-car" style="width:1%">
+              {% if v.rep_image_path %}<img src="/{{ v.rep_image_path }}" loading="lazy"
+                   onerror="this.style.display='none'">{% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+            <td><span class="badge plate-badge">{{ v.plate }}</span>
+              {% if v.confirmed_speeder %}<span class="badge bg-danger" title="Confirmed speeder">🚨</span>{% endif %}
+            </td>
+            <td class="text-end"><span class="spd spd-{{ speed_band(v.max_mph) }}">{{ fmt_mph(v.max_mph) }}</span>
+              <span class="unit text-muted small">mph</span></td>
+            <td class="text-end text-muted small">{{ v.passes }} pass{{ 'es' if v.passes != 1 }}</td>
+            <td class="text-end text-muted small text-nowrap">{{ fmt_ago(v.last_seen) }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3">No vehicles recorded yet.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Recent passes strip ── -->
+<h6 class="mt-4 mb-2 d-flex">Recent passes <a href="/passes" class="ms-auto small fw-normal">more →</a></h6>
+{% if recent %}
+<div class="row g-2">
+  {% for p in recent %}
+  <div class="col-6 col-md-3 col-xl">
+    <a href="/session/{{ p.session_id }}" class="text-decoration-none">
+      <div class="strip-thumb position-relative">
+        {% set img = p.trajectory_overlay_path or p.entry_frame_path or p.car_crop_path %}
+        {% if img %}<img src="/{{ img }}" loading="lazy" onerror="this.src=''; this.alt='—'">
+        {% else %}<div class="d-flex align-items-center justify-content-center text-muted"
+             style="height:84px;background:#1a1a28;border-radius:6px">no image</div>{% endif %}
+        <span class="spd-chip spd-{{ speed_band(p.sw_speed_mph) }} position-absolute"
+              style="top:.3rem;left:.3rem;font-size:.78rem">{{ fmt_mph(p.sw_speed_mph) }}</span>
+      </div>
+      <div class="d-flex align-items-center gap-1 mt-1" style="font-size:.74rem">
+        {% if p.eff_plate %}<span class="badge plate-badge" style="font-size:.66rem">{{ p.eff_plate }}</span>
+        {% else %}<span class="text-muted">no plate</span>{% endif %}
+        <span class="text-muted ms-auto">{{ fmt_ago(p.start_ts) }}</span>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-secondary">No passes recorded yet.</div>
+{% endif %}
+{% endblock %}

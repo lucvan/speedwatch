@@ -82,21 +82,103 @@ def _confidence_class(c):
         return "warning"
     return "danger"
 
+
+def _speed_band(v):
+    """UI band for a speed: 'ok' (green) / 'warn' (amber) / 'over' (red) / '' (unknown)."""
+    if v is None:
+        return ""
+    try:
+        v = float(v)
+    except Exception:
+        return ""
+    if v > config.SPEED_LIMIT_MPH:
+        return "over"
+    if v >= config.SPEED_WARN_MPH:
+        return "warn"
+    return "ok"
+
+
+def _fmt_ago(ts):
+    """Compact relative time, e.g. 'just now', '12 min', '3 h', '2 d'."""
+    if ts is None:
+        return "—"
+    try:
+        delta = time.time() - float(ts)
+    except Exception:
+        return "—"
+    if delta < 0:
+        delta = 0
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)} min"
+    if delta < 86400:
+        return f"{int(delta // 3600)} h"
+    if delta < 7 * 86400:
+        return f"{int(delta // 86400)} d"
+    return _fmt_ts(ts).split(" ")[0]
+
+
+def _day_label(ts):
+    """'Today' / 'Yesterday' / 'DD Mon YYYY' for grouping rows by calendar day."""
+    if ts is None:
+        return "—"
+    try:
+        d = datetime.fromtimestamp(float(ts)).date()
+    except Exception:
+        return "—"
+    today = datetime.now().date()
+    delta = (today - d).days
+    if delta == 0:
+        return "Today"
+    if delta == 1:
+        return "Yesterday"
+    return d.strftime("%d %b %Y")
+
+
 templates.env.globals["fmt_ts"]           = _fmt_ts
 templates.env.globals["fmt_mph"]          = _fmt_mph
+templates.env.globals["fmt_ago"]          = _fmt_ago
+templates.env.globals["day_label"]        = _day_label
 templates.env.globals["confidence_class"] = _confidence_class
+templates.env.globals["speed_band"]       = _speed_band
 templates.env.globals["abs"]              = abs
 templates.env.globals["round"]            = round
+templates.env.globals["SPEED_LIMIT_MPH"]  = config.SPEED_LIMIT_MPH
+templates.env.globals["SPEED_WARN_MPH"]   = config.SPEED_WARN_MPH
+templates.env.globals["APP_VERSION"]      = config.APP_VERSION
 
 
 # ── Web routes ─────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, order_by: str = "created_at", label: str = "", page: int = 1):
+async def dashboard(request: Request):
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    stats = await db.dashboard_stats(midnight, config.SPEED_WARN_MPH, config.SPEED_LIMIT_MPH)
+    recent = await db.recent_fast_passes(limit=8)
+    leaders = await db.list_vehicles(order_by="max_mph", min_passes=1)
+    leaders = leaders[:8]
+    has_cal = (await db.get_active_calibration(config.CAMERA_NAME)) is not None
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "stats": stats,
+        "recent": recent,
+        "leaders": leaders,
+        "has_calibration": has_cal,
+        "pipeline_status": _pipeline_status,
+    })
+
+
+@app.get("/passes", response_class=HTMLResponse)
+async def passes_list(request: Request, order_by: str = "created_at", label: str = "",
+                      page: int = 1, min_mph: float = 0, plateless: int = 0):
     limit  = 50
     offset = (page - 1) * limit
-    passes = await db.list_passes(limit=limit, offset=offset, label=label or None, order_by=order_by)
-    total  = await db.count_passes(label=label or None)
+    min_mph_f = min_mph if min_mph and min_mph > 0 else None
+    plateless_b = bool(plateless)
+    passes = await db.list_passes(limit=limit, offset=offset, label=label or None,
+                                  order_by=order_by, min_mph=min_mph_f, plateless=plateless_b)
+    total  = await db.count_passes(label=label or None, min_mph=min_mph_f, plateless=plateless_b)
     has_cal = (await db.get_active_calibration(config.CAMERA_NAME)) is not None
     return templates.TemplateResponse("list.html", {
         "request": request,
@@ -106,6 +188,8 @@ async def index(request: Request, order_by: str = "created_at", label: str = "",
         "limit": limit,
         "order_by": order_by,
         "label_filter": label,
+        "min_mph": min_mph_f or 0,
+        "plateless": 1 if plateless_b else 0,
         "has_calibration": has_cal,
         "pipeline_status": _pipeline_status,
     })
@@ -158,14 +242,71 @@ async def calibrate_page(request: Request):
     })
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    """Read-only view of the running configuration (edited via .env + service restart)."""
+    from . import detect
+    intr = intr_mod.load(config.CAMERA_NAME)
+    active_cal = await db.get_active_calibration(config.CAMERA_NAME)
+    groups = [
+        ("Camera & pipeline", [
+            ("Camera name", config.CAMERA_NAME),
+            ("Pipeline resolution", f"{config.PIPELINE_WIDTH}×{config.PIPELINE_HEIGHT}"),
+            ("Detect FPS / infer FPS", f"{config.DETECT_FPS:g} / {config.DETECT_INFER_FPS:g}"),
+            ("Max session seconds", f"{config.MAX_SESSION_SECONDS:g}"),
+            ("ffmpeg hwaccel", config.FFMPEG_HWACCEL or "(software)"),
+        ]),
+        ("Speed", [
+            ("Legal limit (red)", f"{config.SPEED_LIMIT_MPH:g} mph"),
+            ("Warn threshold (amber)", f"{config.SPEED_WARN_MPH:g} mph"),
+            ("Min dt for a valid pass", f"{config.MIN_DT_SECONDS:g} s"),
+            ("Active zone calibration", "yes" if active_cal else "none"),
+            ("Lens intrinsics", "calibrated" if intr else "none"),
+        ]),
+        ("Detection & inference", [
+            ("YOLO model", config.YOLO_MODEL),
+            ("ONNX provider", detect.active_provider()),
+            ("Object classes", config.OBJECT_CLASSES),
+        ]),
+        ("ANPR", [
+            ("Enabled", "yes" if config.ENABLE_ALPR else "no"),
+            ("Detector model", config.ALPR_DETECTOR_MODEL),
+            ("OCR model", config.ALPR_OCR_MODEL),
+            ("Min OCR confidence", f"{config.ALPR_MIN_CONF:g}"),
+        ]),
+        ("Vehicle enrichment", [
+            ("Vision model", config.VEHICLE_VISION_MODEL),
+            ("Auto-describe", "yes" if config.VEHICLE_AUTODESCRIBE else "no"),
+            ("Describe after N passes", str(config.VEHICLE_MIN_PASSES)),
+            ("Re-ID model", config.REID_MODEL),
+            ("Re-ID available", "yes" if embed_mod.available() else "no (model not installed)"),
+            ("Re-ID same-car threshold", f"{config.REID_SIM_THRESHOLD:g}"),
+        ]),
+        ("Server", [
+            ("Bind", f"{config.HOST}:{config.PORT}"),
+            ("Data dir", config.DATA_DIR),
+            ("Version", config.APP_VERSION),
+        ]),
+    ]
+    return templates.TemplateResponse("settings.html", {
+        "request": request,
+        "groups": groups,
+        "pipeline_status": _pipeline_status,
+    })
+
+
 @app.get("/vehicles", response_class=HTMLResponse)
-async def vehicles_page(request: Request, order_by: str = "max_mph", min_passes: int = 1):
+async def vehicles_page(request: Request, order_by: str = "max_mph", min_passes: int = 1,
+                        confirmed: int = 0):
     vehicles = await db.list_vehicles(order_by=order_by, min_passes=min_passes)
+    if confirmed:
+        vehicles = [v for v in vehicles if v.get("confirmed_speeder")]
     return templates.TemplateResponse("vehicles.html", {
         "request": request,
         "vehicles": vehicles,
         "order_by": order_by,
         "min_passes": min_passes,
+        "confirmed": 1 if confirmed else 0,
         "describe_threshold": config.VEHICLE_MIN_PASSES,
     })
 

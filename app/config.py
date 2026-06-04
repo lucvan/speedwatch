@@ -2,6 +2,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+APP_VERSION = "0.1.0"
+
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent.parent / ".env")
@@ -46,6 +48,14 @@ MOTION_SCALE     = float(os.getenv("MOTION_SCALE", "0.25"))
 
 # Speed qualification
 MIN_DT_SECONDS = float(os.getenv("MIN_DT_SECONDS", "0.3"))
+
+# Speed banding for the UI. The legal limit is the red threshold; the warn (amber)
+# threshold is set lower to absorb measurement margin on this narrow dead-end road.
+#   speed < SPEED_WARN_MPH            → green  (within comfortable margin)
+#   SPEED_WARN_MPH ≤ speed ≤ LIMIT    → amber  (watch)
+#   speed > SPEED_LIMIT_MPH           → red    (over the legal limit)
+SPEED_LIMIT_MPH = float(os.getenv("SPEED_LIMIT_MPH", "20"))
+SPEED_WARN_MPH  = float(os.getenv("SPEED_WARN_MPH",  "16"))
 
 # ANPR / number-plate recognition (fast-alpr). Runs on CPU (tiny models) so it does not
 # contend with YOLO on DML. Applied to the entry + exit car crop of each qualifying pass;

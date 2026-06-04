@@ -312,6 +312,8 @@ async def list_passes(
     label: str | None = None,
     unlabelled_only: bool = False,
     order_by: str = "created_at",
+    min_mph: float | None = None,
+    plateless: bool = False,
 ) -> list[dict]:
     conditions, params = [], []
     if label:
@@ -319,6 +321,11 @@ async def list_passes(
         params.append(label)
     if unlabelled_only:
         conditions.append("p.user_label IS NULL")
+    if min_mph is not None:
+        conditions.append("p.sw_speed_mph >= ?")
+        params.append(min_mph)
+    if plateless:
+        conditions.append(f"({_EFF} IS NULL OR {_EFF} = '')")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     order_sql = {
         "created_at":   "p.created_at DESC",
@@ -344,16 +351,22 @@ async def list_passes(
         return [dict(r) for r in await cur.fetchall()]
 
 
-async def count_passes(label: str | None = None, unlabelled_only: bool = False) -> int:
+async def count_passes(label: str | None = None, unlabelled_only: bool = False,
+                       min_mph: float | None = None, plateless: bool = False) -> int:
     conditions, params = [], []
     if label:
-        conditions.append("user_label=?")
+        conditions.append("p.user_label=?")
         params.append(label)
     if unlabelled_only:
-        conditions.append("user_label IS NULL")
+        conditions.append("p.user_label IS NULL")
+    if min_mph is not None:
+        conditions.append("p.sw_speed_mph >= ?")
+        params.append(min_mph)
+    if plateless:
+        conditions.append(f"({_EFF} IS NULL OR {_EFF} = '')")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     async with aiosqlite.connect(DB_PATH) as conn:
-        cur = await conn.execute(f"SELECT COUNT(*) FROM pass {where}", params)
+        cur = await conn.execute(f"SELECT COUNT(*) FROM pass p {where}", params)
         row = await cur.fetchone()
         return row[0] if row else 0
 
@@ -798,3 +811,70 @@ async def count_evidence_passes() -> int:
         cur = await conn.execute(sql)
         row = await cur.fetchone()
         return row[0] if row else 0
+
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+
+async def dashboard_stats(since_ts: float, warn_mph: float, limit_mph: float) -> dict:
+    """One round of aggregate counters for the landing dashboard. `since_ts` marks the
+    start of "today" (local midnight, computed by the caller)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async def scalar(sql, params=()):
+            cur = await conn.execute(sql, params)
+            row = await cur.fetchone()
+            return row[0] if row and row[0] is not None else 0
+
+        total_passes   = await scalar("SELECT COUNT(*) FROM pass")
+        passes_today   = await scalar(
+            "SELECT COUNT(*) FROM pass p JOIN pass_session s ON s.id=p.session_id "
+            "WHERE s.start_ts >= ?", (since_ts,))
+        fastest_all    = await scalar("SELECT MAX(sw_speed_mph) FROM pass")
+        fastest_today  = await scalar(
+            "SELECT MAX(p.sw_speed_mph) FROM pass p JOIN pass_session s ON s.id=p.session_id "
+            "WHERE s.start_ts >= ?", (since_ts,))
+        over_today     = await scalar(
+            "SELECT COUNT(*) FROM pass p JOIN pass_session s ON s.id=p.session_id "
+            "WHERE s.start_ts >= ? AND p.sw_speed_mph > ?", (since_ts, limit_mph))
+        vehicles_total = await scalar(
+            f"SELECT COUNT(*) FROM ( {_VEHICLE_STATS_SQL} )")
+        confirmed_veh  = await scalar(
+            "SELECT COUNT(*) FROM vehicle WHERE confirmed_speeder = 1")
+        evidence_total = await scalar(
+            f"SELECT COUNT(*) FROM pass p WHERE {_EVIDENCE_WHERE}")
+        # Work queues
+        plateless      = await scalar(
+            f"SELECT COUNT(*) FROM pass p WHERE {_EFF} IS NULL OR {_EFF} = ''")
+        low_conf_unlbl = await scalar(
+            "SELECT COUNT(*) FROM pass WHERE user_label IS NULL AND confidence < 0.4")
+        needing_embed  = await scalar(
+            "SELECT COUNT(*) FROM pass WHERE embedding IS NULL "
+            "AND car_crop_path IS NOT NULL AND car_crop_path <> ''")
+    return {
+        "total_passes": total_passes,
+        "passes_today": passes_today,
+        "fastest_all": fastest_all or None,
+        "fastest_today": fastest_today or None,
+        "over_today": over_today,
+        "vehicles_total": vehicles_total,
+        "confirmed_vehicles": confirmed_veh,
+        "evidence_total": evidence_total,
+        "plateless": plateless,
+        "low_conf_unlabelled": low_conf_unlbl,
+        "needing_embedding": needing_embed,
+    }
+
+
+async def recent_fast_passes(limit: int = 8) -> list[dict]:
+    """Most recent passes (newest first) with thumbnail + plate, for the dashboard strip."""
+    sql = f"""
+        SELECT p.id, p.session_id, p.sw_speed_mph, p.confidence,
+               p.trajectory_overlay_path, p.entry_frame_path, p.car_crop_path,
+               s.start_ts, {_EFF} AS eff_plate
+        FROM pass p JOIN pass_session s ON s.id = p.session_id
+        ORDER BY s.start_ts DESC
+        LIMIT ?
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(sql, (limit,))
+        return [dict(r) for r in await cur.fetchall()]

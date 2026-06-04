@@ -2,86 +2,89 @@
 {% block title %}Speedwatch — Passes{% endblock %}
 
 {% block content %}
-<div class="row mb-3 align-items-end g-2">
-  <div class="col-auto">
-    <h5 class="mb-0">
-      Passes <span class="badge bg-secondary">{{ total }}</span>
-    </h5>
-  </div>
-
-  {% if not has_calibration %}
-  <div class="col-12">
-    <div class="alert alert-warning py-2 mb-0">
-      No active calibration set up yet.
-      <a href="/calibrate">Set up calibration</a> before the pipeline runs.
-    </div>
-  </div>
-  {% endif %}
-
-  <div class="col">
-    <form class="d-flex gap-2 flex-wrap" method="get" action="/">
-      <select name="order_by" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
-        <option value="created_at"  {% if order_by=='created_at'  %}selected{% endif %}>Sort: Newest</option>
-        <option value="sw_speed_mph"{% if order_by=='sw_speed_mph'%}selected{% endif %}>Sort: Speed ↓</option>
-        <option value="confidence"  {% if order_by=='confidence'  %}selected{% endif %}>Sort: Low confidence</option>
-      </select>
-      <select name="label" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
-        <option value="" {% if not label_filter %}selected{% endif %}>All labels</option>
-        <option value="sw_ok"    {% if label_filter=='sw_ok'    %}selected{% endif %}>✅ OK</option>
-        <option value="sw_wrong" {% if label_filter=='sw_wrong' %}selected{% endif %}>❌ Wrong</option>
-        <option value="unsure"   {% if label_filter=='unsure'   %}selected{% endif %}>❓ Unsure</option>
-      </select>
-      <button class="btn btn-sm btn-outline-info">Filter</button>
-    </form>
-  </div>
-  <div class="col-auto ms-auto d-flex gap-2 align-items-center">
-    <span class="text-muted small">{{ pipeline_status }}</span>
-  </div>
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <h4 class="mb-0">Passes <span class="badge bg-secondary align-middle">{{ total }}</span></h4>
+  <span class="text-muted small ms-auto">{{ pipeline_status }}</span>
 </div>
+
+{% if not has_calibration %}
+<div class="alert alert-warning py-2">
+  No active calibration set up yet.
+  <a href="/calibrate">Set up calibration</a> before the pipeline runs.
+</div>
+{% endif %}
+
+<form class="d-flex gap-2 flex-wrap align-items-center mb-3" method="get" action="/passes">
+  <select name="order_by" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
+    <option value="created_at"  {% if order_by=='created_at'  %}selected{% endif %}>Newest first</option>
+    <option value="sw_speed_mph"{% if order_by=='sw_speed_mph'%}selected{% endif %}>Fastest first</option>
+    <option value="confidence"  {% if order_by=='confidence'  %}selected{% endif %}>Lowest confidence</option>
+  </select>
+  <select name="label" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
+    <option value="" {% if not label_filter %}selected{% endif %}>All labels</option>
+    <option value="sw_ok"    {% if label_filter=='sw_ok'    %}selected{% endif %}>✅ OK</option>
+    <option value="sw_wrong" {% if label_filter=='sw_wrong' %}selected{% endif %}>❌ Wrong</option>
+    <option value="unsure"   {% if label_filter=='unsure'   %}selected{% endif %}>❓ Unsure</option>
+  </select>
+  <select name="min_mph" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
+    <option value="0"  {% if not min_mph %}selected{% endif %}>Any speed</option>
+    <option value="{{ SPEED_WARN_MPH|int }}"  {% if min_mph == SPEED_WARN_MPH %}selected{% endif %}>≥ {{ SPEED_WARN_MPH|int }} mph</option>
+    <option value="{{ SPEED_LIMIT_MPH|int }}" {% if min_mph == SPEED_LIMIT_MPH %}selected{% endif %}>≥ {{ SPEED_LIMIT_MPH|int }} mph (over limit)</option>
+    <option value="25" {% if min_mph == 25 %}selected{% endif %}>≥ 25 mph</option>
+  </select>
+  <div class="form-check form-check-inline">
+    <input class="form-check-input" type="checkbox" name="plateless" value="1" id="plateless"
+           {% if plateless %}checked{% endif %} onchange="this.form.submit()">
+    <label class="form-check-label small" for="plateless">No plate only</label>
+  </div>
+  <noscript><button class="btn btn-sm btn-outline-info">Apply</button></noscript>
+</form>
 
 <div class="table-responsive">
 <table class="table table-hover table-sm align-middle">
   <thead class="table-dark">
     <tr>
-      <th>Thumb</th>
-      <th>Time</th>
+      <th style="width:1%"></th>
+      <th>When</th>
       <th>Speed</th>
       <th>Plate</th>
       <th>Conf</th>
-      <th>Frames</th>
-      <th>Dwell</th>
       <th>Label</th>
-      <th></th>
+      <th class="text-end"></th>
     </tr>
   </thead>
   <tbody>
+  {% set ns = namespace(day='') %}
   {% for p in passes %}
+  {% set d = day_label(p.start_ts) %}
+  {% if d != ns.day %}
+    {% set ns.day = d %}
+    <tr class="row-divider"><td colspan="7">{{ d }}</td></tr>
+  {% endif %}
   <tr>
     <td class="thumb">
-      {% if p.trajectory_overlay_path %}
+      {% set img = p.trajectory_overlay_path or p.entry_frame_path %}
+      {% if img %}
       <a href="/session/{{ p.session_id }}">
-        <img src="/{{ p.trajectory_overlay_path }}" alt="traj" loading="lazy"
-             onerror="this.outerHTML='<span class=text-muted>—</span>'">
-      </a>
-      {% elif p.entry_frame_path %}
-      <a href="/session/{{ p.session_id }}">
-        <img src="/{{ p.entry_frame_path }}" alt="entry" loading="lazy"
+        <img src="/{{ img }}" alt="" loading="lazy"
              onerror="this.outerHTML='<span class=text-muted>—</span>'">
       </a>
       {% else %}
       <a href="/session/{{ p.session_id }}" class="text-muted small">view</a>
       {% endif %}
     </td>
-    <td class="text-nowrap small">{{ fmt_ts(p.start_ts) }}</td>
-    <td>
-      <span class="fw-bold text-info fs-6">{{ fmt_mph(p.sw_speed_mph) }}</span>
-      <span class="text-muted small"> mph</span>
+    <td class="text-nowrap small" title="{{ fmt_ts(p.start_ts) }}">
+      <a href="/session/{{ p.session_id }}" class="text-decoration-none text-body">{{ fmt_ago(p.start_ts) }}</a>
+    </td>
+    <td class="text-nowrap">
+      <span class="spd spd-{{ speed_band(p.sw_speed_mph) }} fs-6">{{ fmt_mph(p.sw_speed_mph) }}</span>
+      <span class="unit text-muted small">mph</span>
     </td>
     <td>
       {% if p.eff_plate %}
       <a href="/vehicle/{{ p.eff_plate }}" class="text-decoration-none"
          title="OCR read: {{ p.plate or 'none' }} · open vehicle page">
-        <span class="badge bg-dark border border-warning text-warning font-monospace">{{ p.eff_plate }}</span>
+        <span class="badge plate-badge">{{ p.eff_plate }}</span>
       </a>
       {% if not p.plate %}
         <span class="badge bg-info text-dark" title="manually assigned to this vehicle">assigned</span>
@@ -89,10 +92,10 @@
         <span class="badge bg-secondary" title="OCR read {{ p.plate }} — merged into {{ p.eff_plate }}">merged</span>
       {% endif %}
       {% if p.veh_user_description or p.veh_description %}
-      <div class="text-muted" style="font-size:.7rem">{{ p.veh_user_description or p.veh_description }}</div>
+      <div class="text-muted text-truncate" style="font-size:.7rem;max-width:220px">{{ p.veh_user_description or p.veh_description }}</div>
       {% endif %}
       {% else %}
-      <span class="text-muted small">—</span>
+      <span class="text-muted small">no plate</span>
       {% endif %}
     </td>
     <td>
@@ -100,8 +103,6 @@
         {{ "%.0f"|format(p.confidence * 100) }}%
       </span>
     </td>
-    <td class="small text-muted">{{ p.frames_in_zone }}</td>
-    <td class="small text-muted">{{ "%.2f"|format(p.dwell_seconds) }}s</td>
     <td>
       {% if p.user_label %}
       <span class="badge badge-label-{{ p.user_label }}">{{ p.user_label|replace('_',' ') }}</span>
@@ -109,19 +110,18 @@
       <span class="text-muted small">—</span>
       {% endif %}
     </td>
-    <td class="text-nowrap">
-      <a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0">View</a>
+    <td class="text-nowrap text-end">
       <button class="btn btn-sm py-0 {{ 'btn-danger' if p.confirmed_speeder else 'btn-outline-danger' }}"
               data-on="{{ 1 if p.confirmed_speeder else 0 }}"
-              title="Flag as confirmed speeder evidence"
+              title="Flag as confirmed-speeder evidence"
               onclick="confirmPass({{ p.id }}, this)">{{ '🚨' if p.confirmed_speeder else 'Flag' }}</button>
-      <button class="btn btn-sm btn-outline-danger py-0"
-              onclick="deleteSession({{ p.session_id }}, this)">Del</button>
+      <button class="btn btn-sm btn-outline-secondary py-0"
+              title="Delete session" onclick="deleteSession({{ p.session_id }}, this)">✕</button>
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="text-center text-muted py-4">
-    No passes yet. <a href="/calibrate">Set up calibration</a> and wait for a vehicle.
+  <tr><td colspan="7" class="text-center text-muted py-4">
+    No passes match. {% if min_mph or plateless or label_filter %}<a href="/passes">Clear filters</a>{% else %}<a href="/calibrate">Set up calibration</a> and wait for a vehicle.{% endif %}
   </td></tr>
   {% endfor %}
   </tbody>
@@ -129,17 +129,14 @@
 </div>
 
 {% if total > limit %}
+{% set qs = 'order_by=' ~ order_by ~ '&label=' ~ label_filter ~ '&min_mph=' ~ (min_mph or 0)|int ~ '&plateless=' ~ plateless %}
 <nav><ul class="pagination pagination-sm">
   {% if page > 1 %}
-  <li class="page-item">
-    <a class="page-link" href="/?page={{ page-1 }}&order_by={{ order_by }}&label={{ label_filter }}">‹ Prev</a>
-  </li>
+  <li class="page-item"><a class="page-link" href="/passes?page={{ page-1 }}&{{ qs }}">‹ Prev</a></li>
   {% endif %}
   <li class="page-item disabled"><span class="page-link">{{ page }} / {{ ((total-1)//limit)+1 }}</span></li>
   {% if page * limit < total %}
-  <li class="page-item">
-    <a class="page-link" href="/?page={{ page+1 }}&order_by={{ order_by }}&label={{ label_filter }}">Next ›</a>
-  </li>
+  <li class="page-item"><a class="page-link" href="/passes?page={{ page+1 }}&{{ qs }}">Next ›</a></li>
   {% endif %}
 </ul></nav>
 {% endif %}

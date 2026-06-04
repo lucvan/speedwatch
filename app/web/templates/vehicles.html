@@ -2,22 +2,28 @@
 {% block title %}Vehicles — Speedwatch{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
-  <h5 class="mb-0">Vehicles <span class="text-muted small">({{ vehicles|length }} plates seen)</span></h5>
+<div class="d-flex align-items-center mb-2 gap-3 flex-wrap">
+  <h4 class="mb-0">Vehicles <span class="text-muted small">({{ vehicles|length }} shown)</span></h4>
   <button id="bf-btn" class="btn btn-sm btn-outline-secondary" onclick="backfill()">Backfill car images</button>
   <span id="bf-status" class="small text-muted"></span>
-  <div class="ms-auto d-flex gap-2 align-items-center small">
-    <span class="text-muted">Sort:</span>
+</div>
+
+<div class="d-flex gap-3 flex-wrap align-items-center mb-3 small">
+  <div><span class="text-muted">Sort:</span>
     {% for key, label in [('max_mph','Top speed'), ('avg_mph','Avg speed'), ('passes','Most passes'), ('last_seen','Recent')] %}
-    <a href="/vehicles?order_by={{ key }}&min_passes={{ min_passes }}"
-       class="nav-link small py-0 {% if order_by==key %}active{% endif %}">{{ label }}</a>
-    {% endfor %}
-    <span class="text-muted ms-2">Min passes:</span>
-    {% for n in [1, 2, 3, 5] %}
-    <a href="/vehicles?order_by={{ order_by }}&min_passes={{ n }}"
-       class="nav-link small py-0 {% if min_passes==n %}active{% endif %}">{{ n }}</a>
+    <a href="/vehicles?order_by={{ key }}&min_passes={{ min_passes }}&confirmed={{ confirmed }}"
+       class="ms-1 {% if order_by==key %}fw-bold text-info{% else %}text-decoration-none{% endif %}">{{ label }}</a>
     {% endfor %}
   </div>
+  <div><span class="text-muted">Min passes:</span>
+    {% for n in [1, 2, 3, 5] %}
+    <a href="/vehicles?order_by={{ order_by }}&min_passes={{ n }}&confirmed={{ confirmed }}"
+       class="ms-1 {% if min_passes==n %}fw-bold text-info{% else %}text-decoration-none{% endif %}">{{ n }}</a>
+    {% endfor %}
+  </div>
+  <a href="/vehicles?order_by={{ order_by }}&min_passes={{ min_passes }}&confirmed={{ 0 if confirmed else 1 }}"
+     class="badge {{ 'bg-danger' if confirmed else 'bg-dark border border-secondary' }} text-decoration-none">
+     🚨 {{ 'Confirmed only' if confirmed else 'Show confirmed only' }}</a>
 </div>
 
 {% if vehicles %}
@@ -25,31 +31,34 @@
 <table class="table table-hover table-sm align-middle">
   <thead class="table-dark">
     <tr>
-      <th>Car</th><th>Plate</th><th>Passes</th><th>Top mph</th><th>Avg mph</th>
+      <th style="width:1%">Car</th><th>Plate</th><th class="text-end">Passes</th>
+      <th class="text-end">Top</th><th class="text-end">Avg</th>
       <th>Last seen</th><th>Description</th>
     </tr>
   </thead>
   <tbody>
   {% for v in vehicles %}
   <tr onclick="window.location='/vehicle/{{ v.plate }}'" style="cursor:pointer">
-    <td class="thumb">
+    <td class="thumb-car">
       {% if v.rep_image_path %}
       <img src="/{{ v.rep_image_path }}" alt="car" loading="lazy"
            onerror="this.outerHTML='<span class=text-muted>—</span>'">
       {% else %}<span class="text-muted">—</span>{% endif %}
     </td>
     <td>
-      <span class="badge bg-dark border border-warning text-warning font-monospace fs-6">{{ v.plate }}</span>
+      <span class="badge plate-badge fs-6">{{ v.plate }}</span>
       {% if v.confirmed_speeder %}<span class="badge bg-danger" title="Confirmed speeder">🚨</span>{% endif %}
     </td>
-    <td class="fw-bold">{{ v.passes }}</td>
-    <td><span class="fw-bold text-info">{{ fmt_mph(v.max_mph) }}</span></td>
-    <td class="text-muted">{{ fmt_mph(v.avg_mph) }}</td>
-    <td class="small text-muted text-nowrap">{{ fmt_ts(v.last_seen) }}</td>
+    <td class="text-end fw-bold">{{ v.passes }}</td>
+    <td class="text-end"><span class="spd spd-{{ speed_band(v.max_mph) }}">{{ fmt_mph(v.max_mph) }}</span></td>
+    <td class="text-end text-muted">{{ fmt_mph(v.avg_mph) }}</td>
+    <td class="small text-muted text-nowrap" title="{{ fmt_ts(v.last_seen) }}">{{ fmt_ago(v.last_seen) }}</td>
     <td class="small">
+      <div class="text-truncate" style="max-width:280px">
       {% if v.user_description %}<span class="text-body">{{ v.user_description }}</span>
       {% elif v.description %}<span class="text-muted fst-italic">{{ v.description }}</span>
       {% else %}<span class="text-muted">—</span>{% endif %}
+      </div>
     </td>
   </tr>
   {% endfor %}
@@ -58,7 +67,10 @@
 </div>
 <p class="text-muted small">Cars seen more than {{ describe_threshold }} times are auto-described by the local vision model. Click a row for details.</p>
 {% else %}
-<div class="alert alert-secondary">No plated vehicles recorded yet (need passes with a recognised number plate).</div>
+<div class="alert alert-secondary">
+  {% if confirmed %}No confirmed speeders yet — flag a vehicle on its detail page.
+  {% else %}No vehicles recorded yet (need passes with a recognised plate, or plateless passes assigned to one).{% endif %}
+</div>
 {% endif %}
 
 <script>
@@ -66,7 +78,7 @@ async function backfill() {
   const btn = document.getElementById('bf-btn'), st = document.getElementById('bf-status');
   btn.disabled = true; st.textContent = 'Working… (running detection on stored stills, may take a minute)';
   try {
-    const r = await fetch('/api/vehicles/backfill-images', {method:'POST'});
+    const r = await fetch('/api/vehicles/backfill-images', {method: 'POST'});
     const d = await r.json();
     st.textContent = `Done — ${d.updated} crops saved (${d.exact_matches} plate-matched) of ${d.total_missing} missing.`;
     setTimeout(() => location.reload(), 1500);

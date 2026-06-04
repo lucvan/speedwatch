@@ -55,7 +55,7 @@
         {% if p.car_crop_path %}<img src="/{{ p.car_crop_path }}" style="height:90px;border-radius:4px" loading="lazy">
         {% elif p.entry_frame_path %}<img src="/{{ p.entry_frame_path }}" style="height:90px;border-radius:4px" loading="lazy">
         {% else %}<span class="text-muted small">no image</span>{% endif %}
-        <div class="small text-info">{{ fmt_mph(p.sw_speed_mph) }} mph</div>
+        <div class="small"><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted">mph</span></div>
         <div class="text-muted" style="font-size:.65rem">
           <a href="/session/{{ p.session_id }}">#{{ p.id }}</a></div>
       </label>

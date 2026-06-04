@@ -4,114 +4,246 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Speedwatch{% endblock %}</title>
+  <!-- Set theme before first paint to avoid a flash of the wrong theme -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('sw-theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+    })();
+  </script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
   <style>
+    /* ── Theme tokens ── */
+    :root, [data-theme="dark"] {
+      --bg:#111; --panel:#1e1e2e; --panel-2:#15151f; --panel-3:#252538;
+      --thead:#13132a; --divider:#181826;
+      --border:#2a2a3a; --border-2:#2e2e44; --border-3:#333;
+      --text:#e0e0e0; --heading:#d0d0e8; --muted:#8a8aaa; --soft:#9090b0;
+      --accent:#4fc3f7; --accent-hover:#80d8ff; --hover:#252538;
+      --input-bg:#252538; --input-border:#444; --code:#80cbc4; --strong:#e8e8f8;
+      --alert-warn-bg:#2a2000; --alert-warn-bd:#554400; --alert-warn-fg:#d8b840;
+      --alert-sec-bg:#1e1e30;  --alert-sec-bd:#333;    --alert-sec-fg:#9090b0;
+      --alert-dng-bg:#2a0d0d;  --alert-dng-bd:#551111; --alert-dng-fg:#d87070;
+      --alert-suc-bg:#0d2a14;  --alert-suc-bd:#115520; --alert-suc-fg:#60c878;
+      --alert-inf-bg:#0d2030;  --alert-inf-bd:#114455; --alert-inf-fg:#60b8d8;
+      --chip-ok-bg:#0d2a14; --chip-warn-bg:#2a2300; --chip-over-bg:#2a0d0d;
+      --plate-bg:#15151f; --plate-bd:#b9881f; --plate-fg:#e6b84f;
+    }
+    [data-theme="light"] {
+      --bg:#eef1f6; --panel:#ffffff; --panel-2:#ffffff; --panel-3:#eef0f5;
+      --thead:#e7e9f0; --divider:#eaecf2;
+      --border:#d8dbe4; --border-2:#e2e4ec; --border-3:#dde0e8;
+      --text:#1f2430; --heading:#222838; --muted:#5f6678; --soft:#6b7286;
+      --accent:#1577a8; --accent-hover:#1496d0; --hover:#eef2f8;
+      --input-bg:#ffffff; --input-border:#c3c8d4; --code:#0c7a70; --strong:#10141d;
+      --alert-warn-bg:#fff6e0; --alert-warn-bd:#e7cf8f; --alert-warn-fg:#8a6d00;
+      --alert-sec-bg:#f1f3f8;  --alert-sec-bd:#d8dbe4; --alert-sec-fg:#5f6678;
+      --alert-dng-bg:#fdeaea;  --alert-dng-bd:#e6b4b4; --alert-dng-fg:#b02525;
+      --alert-suc-bg:#e7f6ec;  --alert-suc-bd:#aedcba; --alert-suc-fg:#1f7a3a;
+      --alert-inf-bg:#e6f3fb;  --alert-inf-bd:#aad6ee; --alert-inf-fg:#1a6e9c;
+      --chip-ok-bg:#e1f3e7; --chip-warn-bg:#fbf0d2; --chip-over-bg:#fbe2e2;
+      --plate-bg:#fbf3df; --plate-bd:#c79a2a; --plate-fg:#8a6a12;
+    }
+
     /* ── Base ── */
-    body { background:#111; color:#e0e0e0; }
+    body { background:var(--bg); color:var(--text); }
 
-    /* ── Bootstrap text utilities assume light bg — override for dark theme ── */
-    .text-muted    { color:#8a8aaa !important; }
-    .text-secondary{ color:#8a8aaa !important; }
-    .text-dark     { color:#e0e0e0 !important; }
-    .text-body     { color:#e0e0e0 !important; }
+    /* ── Bootstrap text utilities for the active theme ── */
+    .text-muted    { color:var(--muted) !important; }
+    .text-secondary{ color:var(--muted) !important; }
+    .text-dark     { color:var(--text) !important; }
+    .text-body     { color:var(--text) !important; }
 
-    /* ── Navbar ── */
-    .navbar { background:#1a1a2e !important; }
-    .navbar-brand { color:#4fc3f7 !important; font-weight:700; letter-spacing:1px; }
-    .nav-link { color:#9090b0 !important; }
-    .nav-link:hover, .nav-link.active { color:#4fc3f7 !important; }
+    /* ── Layout: fixed left sidebar + main column ── */
+    :root { --sw-sidebar: 220px; }
+    .sw-sidebar {
+      position:fixed; top:0; left:0; bottom:0; width:var(--sw-sidebar);
+      background:var(--panel-2); border-right:1px solid var(--border);
+      display:flex; flex-direction:column; z-index:1030; overflow-y:auto;
+    }
+    .sw-brand {
+      display:flex; align-items:center; gap:.5rem; padding:1rem 1rem .75rem;
+      color:var(--accent); font-weight:700; letter-spacing:.5px; font-size:1.15rem;
+      text-decoration:none;
+    }
+    .sw-brand:hover { color:var(--accent-hover); }
+    .sw-brand .ver { font-size:.65rem; color:var(--soft); font-weight:400; letter-spacing:0; }
+    .sw-nav { display:flex; flex-direction:column; padding:.5rem 0; gap:1px; }
+    .sw-nav a {
+      display:flex; align-items:center; gap:.6rem; padding:.5rem 1rem;
+      color:var(--soft); text-decoration:none; font-size:.92rem; border-left:3px solid transparent;
+    }
+    .sw-nav a:hover { color:var(--accent-hover); background:var(--hover); }
+    .sw-nav a.active { color:var(--accent); background:var(--hover); border-left-color:var(--accent); }
+    .sw-nav a .ic { width:1.2rem; text-align:center; font-size:1rem; }
+    .sw-nav a .count {
+      margin-left:auto; font-size:.7rem; background:var(--panel-3); color:var(--accent);
+      border-radius:.7rem; padding:.05rem .45rem; min-width:1.4rem; text-align:center;
+    }
+    .sw-nav-sep { height:1px; background:var(--border); margin:.5rem .75rem; }
+    .sw-foot { margin-top:auto; padding:.75rem 1rem; border-top:1px solid var(--border); font-size:.72rem; color:var(--soft); }
+    .sw-foot .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#5fd38a; margin-right:.35rem; }
+    .sw-theme-btn {
+      display:flex; align-items:center; gap:.5rem; width:100%; margin-bottom:.5rem;
+      background:transparent; border:1px solid var(--border); color:var(--soft);
+      border-radius:.4rem; padding:.35rem .6rem; font-size:.78rem; cursor:pointer;
+    }
+    .sw-theme-btn:hover { color:var(--accent); border-color:var(--accent); }
+    .sw-main { margin-left:var(--sw-sidebar); padding:1.25rem 1.5rem 3rem; }
+
+    @media (max-width: 720px) {
+      .sw-sidebar { position:static; width:auto; flex-direction:column; }
+      .sw-nav { flex-direction:row; flex-wrap:wrap; }
+      .sw-nav a { border-left:0; border-bottom:3px solid transparent; }
+      .sw-nav a.active { border-left:0; border-bottom-color:var(--accent); }
+      .sw-main { margin-left:0; }
+      .sw-foot { display:none; }
+    }
 
     /* ── Cards ── */
-    .card { background:#1e1e2e; border:1px solid #333; }
-    .card-header { background:#252538; color:#c0c0d8; border-bottom:1px solid #333; }
+    .card { background:var(--panel); border:1px solid var(--border-3); }
+    .card-header { background:var(--panel-3); color:var(--heading); border-bottom:1px solid var(--border-3); }
+
+    /* ── Stat cards (dashboard) ── */
+    .stat-card { background:var(--panel); border:1px solid var(--border-3); border-radius:.5rem; padding:.85rem 1rem; height:100%; }
+    .stat-card .label { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; }
+    .stat-card .value { font-size:1.9rem; font-weight:700; line-height:1.1; color:var(--strong); }
+    .stat-card .sub   { font-size:.75rem; color:var(--muted); }
 
     /* ── Tables ── */
-    .table { color:#d8d8e8; }
-    .table > :not(caption) > * > * { background:transparent; color:inherit; border-color:#2e2e44; }
-    .table-hover tbody tr:hover > * { background:#252538 !important; color:#e8e8f8; }
-    .table-dark { background:#13132a; color:#d0d0e8; }
-    .table-dark th { border-color:#333; }
+    .table { color:var(--text); }
+    .table > :not(caption) > * > * { background:transparent; color:inherit; border-color:var(--border-2); }
+    .table-hover tbody tr:hover > * { background:var(--hover) !important; color:var(--strong); }
+    .table-dark { background:var(--thead); color:var(--heading); }
+    .table-dark th { border-color:var(--border-3); }
+    .row-divider td { background:var(--divider) !important; color:var(--soft); font-size:.78rem;
+      text-transform:uppercase; letter-spacing:.05em; padding:.3rem .75rem; font-weight:600; }
 
     /* ── Alerts ── */
-    .alert-warning  { background:#2a2000; border-color:#554400; color:#d8b840; }
-    .alert-secondary{ background:#1e1e30; border-color:#333; color:#9090b0; }
-    .alert-danger   { background:#2a0d0d; border-color:#551111; color:#d87070; }
-    .alert-success  { background:#0d2a14; border-color:#115520; color:#60c878; }
-    .alert-info     { background:#0d2030; border-color:#114455; color:#60b8d8; }
+    .alert-warning  { background:var(--alert-warn-bg); border-color:var(--alert-warn-bd); color:var(--alert-warn-fg); }
+    .alert-secondary{ background:var(--alert-sec-bg);  border-color:var(--alert-sec-bd);  color:var(--alert-sec-fg); }
+    .alert-danger   { background:var(--alert-dng-bg);  border-color:var(--alert-dng-bd);  color:var(--alert-dng-fg); }
+    .alert-success  { background:var(--alert-suc-bg);  border-color:var(--alert-suc-bd);  color:var(--alert-suc-fg); }
+    .alert-info     { background:var(--alert-inf-bg);  border-color:var(--alert-inf-bd);  color:var(--alert-inf-fg); }
 
     /* ── Form controls ── */
     .form-control, .form-select {
-      background:#252538; color:#e0e0e0; border-color:#444;
+      background:var(--input-bg); color:var(--text); border-color:var(--input-border);
     }
     .form-control:focus, .form-select:focus {
-      background:#252538; color:#e0e0e0; border-color:#4fc3f7; box-shadow:none;
+      background:var(--input-bg); color:var(--text); border-color:var(--accent); box-shadow:none;
     }
-    .form-control::placeholder { color:#6060808; }
-    .form-label { color:#b0b0c8; }
+    .form-control::placeholder { color:var(--muted); }
+    .form-label { color:var(--heading); }
+    .form-check-input:checked { background-color:var(--accent); border-color:var(--accent); }
 
     /* ── Badges ── */
     .badge-label-sw_ok    { background:#1a6e28; color:#fff; }
     .badge-label-sw_wrong { background:#7a1515; color:#fff; }
     .badge-label-unsure   { background:#6a5a00; color:#fff; }
 
-    /* conf-badge: explicit text colors so bg-warning isn't light-on-light */
-    .conf-badge {
-      font-size:.75rem; font-weight:600; padding:.2em .5em; border-radius:.3em;
-    }
+    .conf-badge { font-size:.75rem; font-weight:600; padding:.2em .5em; border-radius:.3em; }
     .conf-badge.bg-success  { color:#fff; }
-    .conf-badge.bg-warning  { color:#111; }   /* yellow bg needs dark text */
+    .conf-badge.bg-warning  { color:#111; }
     .conf-badge.bg-danger   { color:#fff; }
-    .conf-badge.bg-secondary{ color:#e0e0e0; }
+    .conf-badge.bg-secondary{ color:var(--text); }
+    .badge.bg-secondary { color:var(--text); }
 
-    /* Bootstrap badge defaults white text but dark-bg badges look black-on-black */
-    .badge.bg-secondary { color:#e0e0e0; }
+    /* ── Speed banding (over/under the limit) ── */
+    .spd { font-weight:700; }
+    .spd-ok   { color:#3aa564; }
+    .spd-warn { color:#c79320; }
+    .spd-over { color:#e23b3b; }
+    [data-theme="dark"] .spd-ok   { color:#5fd38a; }
+    [data-theme="dark"] .spd-warn { color:#e6b84f; }
+    [data-theme="dark"] .spd-over { color:#ff6b6b; }
+    .spd .unit { font-weight:400; font-size:.72em; color:var(--muted); }
+    .spd-chip { display:inline-block; font-weight:700; border-radius:.35rem; padding:.05em .45em; }
+    .spd-chip.spd-ok   { background:var(--chip-ok-bg); }
+    .spd-chip.spd-warn { background:var(--chip-warn-bg); }
+    .spd-chip.spd-over { background:var(--chip-over-bg); }
+
+    .plate-badge { background:var(--plate-bg); border:1px solid var(--plate-bd); color:var(--plate-fg);
+      font-family:ui-monospace,Menlo,Consolas,monospace; font-weight:600; }
 
     /* ── Pagination ── */
-    .page-link { background:#1e1e2e; border-color:#333; color:#4fc3f7; }
-    .page-link:hover { background:#252538; color:#80d8ff; border-color:#444; }
-    .page-item.disabled .page-link { background:#181828; color:#555; border-color:#2a2a3a; }
-    .page-item.active .page-link { background:#4fc3f7; border-color:#4fc3f7; color:#111; }
+    .page-link { background:var(--panel); border-color:var(--border-3); color:var(--accent); }
+    .page-link:hover { background:var(--hover); color:var(--accent-hover); border-color:var(--input-border); }
+    .page-item.disabled .page-link { background:var(--divider); color:var(--muted); border-color:var(--border); }
+    .page-item.active .page-link { background:var(--accent); border-color:var(--accent); color:#fff; }
 
     /* ── Buttons ── */
-    .btn-check + .btn-outline-success { color:#60c878; border-color:#1a6e28; }
+    .btn-check + .btn-outline-success { color:#3aa564; border-color:#1a6e28; }
     .btn-check:checked + .btn-outline-success { background:#1a6e28; color:#fff; border-color:#1a6e28; }
-    .btn-check + .btn-outline-danger { color:#d87070; border-color:#7a1515; }
+    .btn-check + .btn-outline-danger { color:#d05050; border-color:#7a1515; }
     .btn-check:checked + .btn-outline-danger { background:#7a1515; color:#fff; border-color:#7a1515; }
-    .btn-check + .btn-outline-warning { color:#d8b840; border-color:#6a5a00; }
+    .btn-check + .btn-outline-warning { color:#b88a20; border-color:#6a5a00; }
     .btn-check:checked + .btn-outline-warning { background:#6a5a00; color:#fff; border-color:#6a5a00; }
 
+    /* ── Thumbnails (context-sized; crop keeps the TOP of the frame visible) ── */
+    .thumb img      { width:120px; height:68px; object-fit:cover; object-position:top; border-radius:4px; display:block; }
+    .thumb-car img  { width:104px; height:78px; object-fit:cover; object-position:top; border-radius:4px; display:block; }
+    .cand-thumb img { height:88px;  width:auto;  max-width:150px; object-fit:cover; object-position:top; border-radius:4px; display:block; }
+    .strip-thumb img{ width:100%;  height:84px;  object-fit:cover; object-position:top; border-radius:6px; display:block; }
+    .crop-top       { object-fit:cover; object-position:top; }
+
     /* ── Misc ── */
-    .thumb img { width:96px; height:54px; object-fit:cover; border-radius:4px; }
-    a { color:#4fc3f7; }
-    a:hover { color:#80d8ff; }
-    code { color:#80cbc4; }
+    a { color:var(--accent); }
+    a:hover { color:var(--accent-hover); }
+    code { color:var(--code); }
     video { border-radius:4px; }
     .table td, .table th { vertical-align:middle; }
-    h5, h6 { color:#d0d0e8; }
-    small, .small { color:#9090b0; }
-    .fw-bold { color:#e8e8f8; }
+    h1,h2,h3,h4,h5,h6 { color:var(--heading); }
+    small, .small { color:var(--soft); }
+    .fw-bold { color:var(--strong); }
   </style>
 </head>
 <body>
-<nav class="navbar navbar-dark mb-3">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="/">Speedwatch v2</a>
-    <div class="d-flex gap-3 align-items-center">
-      <a href="/" class="nav-link small">Passes</a>
-      <a href="/vehicles" class="nav-link small">Vehicles</a>
-      <a href="/unidentified" class="nav-link small">Unidentified</a>
-      <a href="/review" class="nav-link small">Review</a>
-      <a href="/evidence" class="nav-link small">🚨 Evidence</a>
-      <a href="/calibrate" class="nav-link small">Calibrate</a>
-      {% if queue_size is defined and queue_size %}
-      <span class="badge bg-warning text-dark">{{ queue_size }} queued</span>
-      {% endif %}
-    </div>
+{% set path = request.url.path %}
+<nav class="sw-sidebar">
+  <a class="sw-brand" href="/">⏱ speedwatch <span class="ver">v{{ APP_VERSION }}</span></a>
+  <div class="sw-nav">
+    <a href="/"             class="{{ 'active' if path == '/' }}"><span class="ic">📊</span> Dashboard</a>
+    <a href="/passes"       class="{{ 'active' if path.startswith('/passes') or path.startswith('/session') }}"><span class="ic">🚗</span> Passes</a>
+    <a href="/vehicles"     class="{{ 'active' if path.startswith('/vehicle') }}"><span class="ic">🪪</span> Vehicles</a>
+    <a href="/unidentified" class="{{ 'active' if path.startswith('/unidentified') }}"><span class="ic">❓</span> Unidentified</a>
+    <a href="/review"       class="{{ 'active' if path.startswith('/review') }}"><span class="ic">🔍</span> Review</a>
+    <a href="/evidence"     class="{{ 'active' if path.startswith('/evidence') }}"><span class="ic">🚨</span> Evidence</a>
+    <div class="sw-nav-sep"></div>
+    <a href="/calibrate"    class="{{ 'active' if path.startswith('/calibrate') }}"><span class="ic">🎯</span> Calibrate</a>
+    <a href="/settings"     class="{{ 'active' if path.startswith('/settings') }}"><span class="ic">⚙️</span> Settings</a>
+  </div>
+  <div class="sw-foot">
+    <button type="button" class="sw-theme-btn" onclick="toggleTheme()">
+      <span id="theme-ic">🌙</span> <span id="theme-label">Dark mode</span>
+    </button>
+    <div><span class="dot"></span>{{ pipeline_status if pipeline_status is defined else 'running' }}</div>
+    {% if queue_size is defined and queue_size %}<div class="mt-1">{{ queue_size }} queued</div>{% endif %}
   </div>
 </nav>
-<div class="container-fluid px-4">
+
+<main class="sw-main">
   {% block content %}{% endblock %}
-</div>
+</main>
+
+<script>
+  function applyThemeLabel() {
+    var t = document.documentElement.getAttribute('data-theme');
+    var ic = document.getElementById('theme-ic'), lb = document.getElementById('theme-label');
+    if (!ic) return;
+    if (t === 'light') { ic.textContent = '☀️'; lb.textContent = 'Light mode'; }
+    else               { ic.textContent = '🌙'; lb.textContent = 'Dark mode'; }
+  }
+  function toggleTheme() {
+    var t = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('sw-theme', t); } catch (e) {}
+    applyThemeLabel();
+  }
+  applyThemeLabel();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 {% block scripts %}{% endblock %}
 </body>
