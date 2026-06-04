@@ -66,8 +66,10 @@ VEHICLE_MIN_PASSES   = int(os.getenv("VEHICLE_MIN_PASSES", "3"))        # descri
 VEHICLE_VISION_TIMEOUT = float(os.getenv("VEHICLE_VISION_TIMEOUT", "180"))
 VEHICLE_VISION_PROMPT = os.getenv(
     "VEHICLE_VISION_PROMPT",
-    "Describe this vehicle in one concise line: colour, make and model if identifiable, "
-    "and body type (hatchback, saloon, estate, SUV, van, etc.). If unsure of make/model, say so.",
+    "Identify the car in this image. Respond with ONLY its colour, make and model on a "
+    "single line, in exactly this format: Colour Make Model (for example: "
+    "Silver Volkswagen Golf). Write Unknown for any part you cannot determine. Do not "
+    "include the number plate, body type, year, condition, or any other words or punctuation.",
 )
 # Max soft edit-distance for suggesting two plates are the same car (OCR-confusable subs cost 0.4).
 ALIAS_SUGGEST_MAXDIST = float(os.getenv("ALIAS_SUGGEST_MAXDIST", "1.5"))

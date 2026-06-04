@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import urllib.request
 from pathlib import Path
 
@@ -97,13 +98,76 @@ def _soft_dist(a: str, b: str) -> float:
     return float(_lev(a, b))
 
 
-def similar_plates(target: str, candidates: list[str],
-                   max_dist: float | None = None) -> list[tuple[str, float]]:
-    """Candidates within OCR-aware soft edit-distance of target, closest first."""
+# ── Appearance (description) matching ────────────────────────────────────────
+# The car's colour/make/model description is an independent signal from the plate OCR:
+# two OCR-variant plates that describe the same car are very likely the same vehicle.
+# It corroborates (and loosens) plate similarity — it never stands alone, since many
+# distinct cars share a make/model/colour.
+
+_DESC_STOP = {"unknown", "car", "vehicle", "a", "an", "the", "and", "or", "with"}
+_DESC_MATCH_MIN_SIM    = 0.5   # token Jaccard threshold for "same appearance"
+_DESC_MATCH_MIN_SHARED = 2     # need ≥2 shared significant tokens (e.g. make + model)
+_DESC_RANK_BONUS       = 0.75  # how much an appearance match improves ranking
+_DESC_DIST_SLACK       = 1.5   # extra plate-distance allowed when appearance corroborates
+
+
+def _desc_tokens(desc: str | None) -> set[str]:
+    if not desc:
+        return set()
+    return {w for w in re.findall(r"[a-z0-9]+", desc.lower()) if w not in _DESC_STOP}
+
+
+def _desc_match(target_tokens: set[str], cand_desc: str | None) -> tuple[bool, float]:
+    """Return (is_match, jaccard_similarity) between a target's tokens and a candidate."""
+    tb = _desc_tokens(cand_desc)
+    if not target_tokens or not tb:
+        return False, 0.0
+    inter = target_tokens & tb
+    sim = len(inter) / len(target_tokens | tb)
+    is_match = len(inter) >= _DESC_MATCH_MIN_SHARED and sim >= _DESC_MATCH_MIN_SIM
+    return is_match, sim
+
+
+def similar_plates(target: str, candidates, target_desc: str | None = None,
+                   max_dist: float | None = None) -> list[dict]:
+    """
+    Candidates likely to be the same car as `target`, best first.
+
+    `candidates` may be plain plate strings or dicts with 'plate' and an optional
+    'user_description'/'description'. When descriptions are present, a candidate whose
+    appearance matches the target is ranked higher and allowed at a looser plate distance
+    (since the matching make/model/colour corroborates that the OCR just misread the plate).
+
+    Returns dicts: {plate, dist, description, desc_sim, desc_match}.
+    """
     md = config.ALIAS_SUGGEST_MAXDIST if max_dist is None else max_dist
-    out = [(c, _soft_dist(target, c)) for c in candidates if c and c != target]
-    out = [(c, round(d, 2)) for c, d in out if d <= md]
-    out.sort(key=lambda x: x[1])
+    tgt_tokens = _desc_tokens(target_desc)
+
+    out: list[dict] = []
+    for c in candidates:
+        if isinstance(c, dict):
+            plate = c.get("plate")
+            desc  = c.get("user_description") or c.get("description")
+        else:
+            plate, desc = c, None
+        if not plate or plate == target:
+            continue
+
+        d = _soft_dist(target, plate)
+        matched, sim = _desc_match(tgt_tokens, desc)
+        # Include if the plate is close, OR the appearance matches and the plate is
+        # within a looser bound (don't suggest wildly different plates on looks alone).
+        if d <= md or (matched and d <= md + _DESC_DIST_SLACK):
+            out.append({
+                "plate": plate,
+                "dist": round(d, 2),
+                "description": desc,
+                "desc_sim": round(sim, 2),
+                "desc_match": matched,
+            })
+
+    # Rank by plate distance, with an appearance match pulling a candidate up the list.
+    out.sort(key=lambda x: x["dist"] - (_DESC_RANK_BONUS if x["desc_match"] else 0.0))
     return out
 
 

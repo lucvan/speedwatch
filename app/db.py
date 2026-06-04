@@ -518,12 +518,16 @@ async def unmerge_plate(canonical: str) -> None:
 
 
 async def list_distinct_plates() -> list[dict]:
-    """Distinct canonical plates with pass counts — for fuzzy match suggestions."""
+    """Distinct canonical plates with pass counts + vehicle descriptions — for fuzzy
+    match suggestions (plate similarity corroborated by appearance)."""
     async with aiosqlite.connect(DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
-            """SELECT COALESCE(a.canonical, p.plate) AS plate, COUNT(*) AS passes
-               FROM pass p LEFT JOIN plate_alias a ON a.alias = p.plate
+            """SELECT COALESCE(a.canonical, p.plate) AS plate, COUNT(*) AS passes,
+                      v.description AS description, v.user_description AS user_description
+               FROM pass p
+               LEFT JOIN plate_alias a ON a.alias = p.plate
+               LEFT JOIN vehicle v ON v.plate = COALESCE(a.canonical, p.plate)
                WHERE p.plate IS NOT NULL AND p.plate <> ''
                GROUP BY COALESCE(a.canonical, p.plate)""",
         )

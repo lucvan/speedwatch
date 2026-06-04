@@ -81,18 +81,21 @@
     {% endif %}
 
     {% if suggestions %}
-    <div class="small text-muted mb-1">Possible same car (OCR-similar plates) — tick any that match, set the correct plate, then Merge:</div>
+    <div class="small text-muted mb-1">Possible same car — tick any that match, set the correct plate, then Merge.
+      <span class="badge bg-info text-dark">same car?</span> = appearance (colour/make/model) also matches.</div>
     <div class="d-flex flex-wrap gap-3 mb-2">
-      {% for plate, dist in suggestions %}
-      <label class="d-flex align-items-center gap-1">
-        <input type="checkbox" class="merge-cb" value="{{ plate }}">
-        <span class="badge bg-dark border border-secondary font-monospace">{{ plate }}</span>
-        <span class="text-muted" style="font-size:.7rem">Δ{{ dist }}</span>
+      {% for s in suggestions %}
+      <label class="d-flex align-items-center gap-1" title="{{ s.description or 'no description' }}">
+        <input type="checkbox" class="merge-cb" value="{{ s.plate }}">
+        <span class="badge bg-dark border {{ 'border-info' if s.desc_match else 'border-secondary' }} font-monospace">{{ s.plate }}</span>
+        {% if s.desc_match %}<span class="badge bg-info text-dark" title="{{ s.description }}">same car?</span>{% endif %}
+        {% if s.description %}<span class="text-muted" style="font-size:.7rem">{{ s.description }}</span>{% endif %}
+        <span class="text-muted" style="font-size:.7rem">Δ{{ s.dist }}</span>
       </label>
       {% endfor %}
     </div>
     {% else %}
-    <div class="small text-muted mb-2">No OCR-similar plates found to suggest.</div>
+    <div class="small text-muted mb-2">No similar plates found to suggest.</div>
     {% endif %}
 
     <div class="d-flex align-items-center gap-2">

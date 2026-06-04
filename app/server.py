@@ -178,8 +178,9 @@ async def vehicle_detail(request: Request, plate: str):
         raise HTTPException(status_code=404, detail="No passes recorded for that plate")
     passes = await db.list_passes_for_plate(plate)
     aliases = await db.aliases_of(plate)
-    others = [r["plate"] for r in await db.list_distinct_plates()]
-    suggestions = vehicles_mod.similar_plates(plate, others)
+    candidates = await db.list_distinct_plates()
+    target_desc = vehicle.get("user_description") or vehicle.get("description")
+    suggestions = vehicles_mod.similar_plates(plate, candidates, target_desc=target_desc)
     return templates.TemplateResponse("vehicle.html", {
         "request": request,
         "vehicle": vehicle,
