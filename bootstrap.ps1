@@ -34,6 +34,19 @@ if (-not (Test-Path $Onnx)) {
     Write-Host "yolo11m.onnx already present, skipping."
 }
 
+# 2b) Vehicle Re-ID embedding model -------------------------------------------
+# OpenVINO OMZ `vehicle-reid-0001` is published directly as ONNX (OSNet, MIT, ~8 MB),
+# so no conversion is needed — just download it. Runs on onnxruntime (CPU). Optional:
+# if absent, the visual-grouping / Unidentified features no-op and the rest runs fine.
+$Reid = Join-Path $Models "vehicle-reid-0001.onnx"
+if (-not (Test-Path $Reid)) {
+    Write-Host "Downloading vehicle-reid-0001.onnx (Re-ID embeddings)..."
+    $ReidUrl = "https://storage.openvinotoolkit.org/repositories/open_model_zoo/public/2022.1/vehicle-reid-0001/osnet_ain_x1_0_vehicle_reid.onnx"
+    Invoke-WebRequest -Uri $ReidUrl -OutFile $Reid -UseBasicParsing
+} else {
+    Write-Host "vehicle-reid-0001.onnx already present, skipping."
+}
+
 # 3) ffmpeg / ffprobe ---------------------------------------------------------
 $Ffmpeg = Join-Path $Root "ffmpeg.exe"
 if (-not (Test-Path $Ffmpeg)) {

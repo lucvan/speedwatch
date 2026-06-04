@@ -2,6 +2,9 @@
 {% block title %}Session #{{ session.id }} — Speedwatch{% endblock %}
 
 {% block content %}
+<datalist id="known-plates">
+  {% for pl in known_plates %}<option value="{{ pl }}">{% endfor %}
+</datalist>
 <div class="row mb-3">
   <div class="col">
     <h5 class="mb-1">Session #{{ session.id }}
@@ -121,6 +124,30 @@
                 onclick="deletePass({{ p.id }}, this)">Delete pass</button>
       </div>
     </form>
+
+    <hr class="my-3" style="border-color:#333">
+    <div class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label small mb-1">
+          Vehicle{% if not p.plate %} <span class="text-warning">— no plate detected</span>{% endif %}
+        </label>
+        <input list="known-plates" id="assign-{{ p.id }}"
+               class="form-control form-control-sm font-monospace" style="width:170px"
+               placeholder="plate to assign" value="{{ p.assigned_plate or '' }}">
+      </div>
+      <div class="col-auto">
+        <button type="button" class="btn btn-sm btn-outline-info" onclick="assignPass({{ p.id }}, this)">
+          {% if p.assigned_plate %}Reassign{% else %}Assign to vehicle{% endif %}
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary {% if not p.assigned_plate %}d-none{% endif %}"
+                id="unassign-{{ p.id }}" onclick="unassignPass({{ p.id }}, this)">Clear</button>
+        <span id="assign-status-{{ p.id }}" class="small ms-1 {% if p.assigned_plate %}text-success{% else %}text-muted{% endif %}">{% if p.assigned_plate %}→ {{ p.assigned_plate }}{% endif %}</span>
+      </div>
+      <div class="col-12">
+        <div class="form-text small">Manually attach this pass to a vehicle — use when the plate
+          wasn't read but you can identify the car. Pick an existing plate or type one. Reversible.</div>
+      </div>
+    </div>
   </div>
 </div>
 {% endfor %}
@@ -140,6 +167,34 @@ async function deletePass(id, btn) {
   const r = await fetch('/api/passes/' + id, {method: 'DELETE'});
   if (r.ok) btn.closest('.card').remove();
   else alert('Delete failed: ' + await r.text());
+}
+async function assignPass(id, btn) {
+  const plate = document.getElementById('assign-' + id).value.trim().toUpperCase();
+  const st = document.getElementById('assign-status-' + id);
+  const r = await fetch('/api/passes/' + id + '/assign', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({plate})
+  });
+  const d = await r.json();
+  if (!r.ok) { st.textContent = 'failed: ' + (d.detail || r.status); st.className = 'small ms-1 text-danger'; return; }
+  if (d.assigned) {
+    st.textContent = '→ ' + d.assigned; st.className = 'small ms-1 text-success';
+    btn.textContent = 'Reassign';
+    document.getElementById('unassign-' + id).classList.remove('d-none');
+  } else {
+    st.textContent = 'cleared'; st.className = 'small ms-1 text-muted';
+  }
+}
+async function unassignPass(id, btn) {
+  document.getElementById('assign-' + id).value = '';
+  const r = await fetch('/api/passes/' + id + '/assign', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plate: ''})
+  });
+  if (r.ok) {
+    document.getElementById('assign-status-' + id).textContent = 'cleared';
+    document.getElementById('assign-status-' + id).className = 'small ms-1 text-muted';
+    btn.classList.add('d-none');
+  } else { alert('Failed: ' + await r.text()); }
 }
 async function confirmPass(id, btn) {
   const makeOn = btn.dataset.on !== '1';

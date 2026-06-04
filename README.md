@@ -99,6 +99,9 @@ The model weights, `.venv`, and `ffmpeg.exe`/`ffprobe.exe` are **not** in the re
 | `VEHICLE_MIN_PASSES` | Describe a plate once it has been seen more than this many times |
 | `VEHICLE_VISION_TIMEOUT` | Seconds to wait on the vision model per call |
 | `VEHICLE_VISION_PROMPT` | Prompt sent to the vision model (default returns `Colour Make Model`) |
+| `REID_MODEL` | Vehicle Re-ID ONNX for visual grouping (default `models/vehicle-reid-0001.onnx`, fetched by bootstrap) |
+| `REID_PROVIDER` | onnxruntime provider for the embedder (`cpu` \| `dml`; cpu is plenty) |
+| `REID_SIM_THRESHOLD` | Cosine similarity to treat two crops as the same car (tune on real footage) |
 
 Additional tuning knobs (frame rates, motion gate, pipeline resolution, plate-merge
 sensitivity) have sensible defaults in `app/config.py` and can be overridden in `.env`.
@@ -197,6 +200,29 @@ exist — corroborates them with **appearance**: a candidate whose colour/make/m
 is ranked higher and allowed at a looser plate distance (a far-off plate is never suggested
 on looks alone). Tick the matches and **Merge** to group them under one canonical plate;
 merges are reversible (the raw `pass.plate` is never rewritten).
+
+You can also **manually assign** any pass to a vehicle (handy when the plate wasn't read but
+you recognise the car) from the pass's session page — it attaches via a reversible
+`assigned_plate` override and the pass then counts toward that vehicle everywhere.
+
+### Visual grouping & Unidentified vehicles (Vehicle Re-ID)
+
+Each car crop is embedded with a small **Vehicle Re-ID model** (OpenVINO OMZ
+`vehicle-reid-0001` — an OSNet, MIT-licensed, ~8 MB ONNX, run on onnxruntime/CPU; fetched by
+`bootstrap.ps1`). The 512-d embedding gives a *visual* similarity signal independent of the
+plate:
+
+- **Vehicle page:** a "visually similar vehicles" list suggests merge candidates by
+  appearance, alongside the plate/description signals.
+- **Unidentified page:** passes with **no plate** are clustered by visual similarity so even
+  plateless cars get grouped. Promote a cluster to a vehicle (give it a label — it then
+  appears in the Vehicles list) or merge it into an existing plate. Older passes are embedded
+  on demand with the **Embed older passes** button.
+
+Visual similarity finds **look-alikes**, not proven identity (two identical cars embed close),
+so it is always a suggestion you confirm. Tune `REID_SIM_THRESHOLD` on real footage: lower it
+if one car keeps splitting into groups, raise it if distinct cars get merged. If the model
+file is absent, these features simply no-op.
 
 ## Confirmed-speeder evidence
 

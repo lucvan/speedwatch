@@ -19,6 +19,7 @@ from . import detect as detect_mod
 from . import speed as speed_mod
 from . import clip as clip_mod
 from . import alpr as alpr_mod
+from . import embed as embed_mod
 from . import vehicles as vehicles_mod
 from .ingest import PassSession, ingest_loop
 from .server import app, set_pipeline_status
@@ -125,6 +126,18 @@ def _process_session(session: PassSession):
         crop_bbox  = best_bbox  if best_bbox  is not None else result.entry_bbox_xyxy
         car_crop_path = clip_mod.save_car_crop(crop_frame, crop_bbox, str(session_id), result.track_id)
 
+        # Vehicle Re-ID embedding of the car crop (for visual grouping of look-alikes /
+        # plateless cars). No-ops if the Re-ID model isn't installed.
+        emb_blob = None
+        if crop_frame is not None and crop_bbox is not None:
+            _t = profiling.start()
+            x1, y1, x2, y2 = (int(v) for v in crop_bbox)
+            car_img = crop_frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            vec = embed_mod.embed_bgr(car_img)
+            if vec is not None:
+                emb_blob = embed_mod.to_blob(vec)
+            profiling.record("embed", _t)
+
         pass_row = {
             "session_id":              session_id,
             "track_id":                result.track_id,
@@ -142,6 +155,7 @@ def _process_session(session: PassSession):
             "plate":                   plate,
             "plate_confidence":        plate_conf,
             "car_crop_path":           car_crop_path,
+            "embedding":               emb_blob,
             **stills,
         }
         asyncio.run_coroutine_threadsafe(
@@ -178,6 +192,7 @@ def _ingest_thread():
     detect_mod.warmup()
     log.info("Detection warmup done — provider: %s", detect_mod.active_provider())
     alpr_mod.warmup()
+    embed_mod.warmup()
     set_pipeline_status("idle (waiting for motion)")
     ingest_loop(_process_session, stop_event=_stop_event)
 

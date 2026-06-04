@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 
 from . import config, db
+from . import embed as embed_mod
 
 log = logging.getLogger(__name__)
 
@@ -237,3 +238,100 @@ async def backfill_car_images(limit: int | None = None) -> dict:
     result = {"updated": updated, "exact_matches": matched, "total_missing": len(rows)}
     log.info("backfill car images: %s", result)
     return result
+
+
+# ── Vehicle Re-ID embeddings: backfill, clustering, visual similarity ─────────
+
+def _embed_crop_sync(crop_rel: str):
+    import cv2
+    p = Path(config.DATA_DIR) / crop_rel
+    if not p.exists():
+        return None
+    img = cv2.imread(str(p))
+    if img is None:
+        return None
+    return embed_mod.embed_bgr(img)
+
+
+async def backfill_embeddings(limit: int | None = None) -> dict:
+    """Compute Re-ID embeddings for passes that have a car crop but no embedding yet."""
+    if not embed_mod.available():
+        return {"error": "Re-ID model not installed", "updated": 0, "total": 0}
+    rows = await db.passes_needing_embedding()
+    if limit:
+        rows = rows[:limit]
+    loop = asyncio.get_event_loop()
+    updated = 0
+    for row in rows:
+        crop = row.get("car_crop_path")
+        if not crop:
+            continue
+        try:
+            vec = await loop.run_in_executor(None, _embed_crop_sync, crop)
+        except Exception as e:
+            log.warning("embed backfill pass %s failed: %s", row.get("id"), e)
+            continue
+        if vec is None:
+            continue
+        await db.set_pass_embedding(row["id"], embed_mod.to_blob(vec))
+        updated += 1
+    result = {"updated": updated, "total": len(rows)}
+    log.info("backfill embeddings: %s", result)
+    return result
+
+
+async def unidentified_clusters() -> list[dict]:
+    """Group plateless passes (no effective plate) into visually-similar clusters for review.
+    Returns clusters (largest first), each with its passes and a representative crop."""
+    if not embed_mod.available():
+        return []
+    rows = await db.plateless_embedded_passes()
+    if not rows:
+        return []
+    items = [(r["id"], embed_mod.from_blob(r["embedding"])) for r in rows]
+    by_id = {r["id"]: r for r in rows}
+    groups = embed_mod.cluster(items)
+    out = []
+    for members in groups:
+        passes = [by_id[i] for i in members]
+        rep = next((p.get("car_crop_path") or p.get("entry_frame_path")
+                    for p in passes if p.get("car_crop_path") or p.get("entry_frame_path")), None)
+        out.append({
+            "pass_ids": members,
+            "size": len(members),
+            "passes": passes,
+            "top_speed": max((p.get("sw_speed_mph") or 0) for p in passes),
+            "rep_crop": rep,
+        })
+    return out
+
+
+# Floor for *showing* a visual candidate on the vehicle page. Lower than REID_SIM_THRESHOLD
+# (the "likely same car" bar) so the closest look-alikes are always offered for review; the
+# template flags which clear the threshold as strong matches.
+_VISUAL_FLOOR = 0.4
+
+
+async def visual_similar_vehicles(target_plate: str, max_results: int = 6,
+                                  min_sim: float | None = None) -> list[tuple[str, float]]:
+    """Identified vehicles whose mean Re-ID embedding is closest to the target's. Returns the
+    top look-alikes above a low discovery floor (not the strict same-car threshold), closest
+    first, as (plate, cosine_sim) — the caller flags which clear REID_SIM_THRESHOLD."""
+    if not embed_mod.available():
+        return []
+    rows = await db.embedded_vehicle_passes()
+    from collections import defaultdict
+    vecs: dict[str, list] = defaultdict(list)
+    for r in rows:
+        if r.get("plate") and r.get("embedding") is not None:
+            vecs[r["plate"]].append(embed_mod.from_blob(r["embedding"]))
+    means = {pl: embed_mod.mean_vector(vs) for pl, vs in vecs.items()}
+    target = means.get(target_plate)
+    if target is None:
+        return []
+    floor = _VISUAL_FLOOR if min_sim is None else min_sim
+    sims = [(pl, embed_mod.cosine(target, m)) for pl, m in means.items()
+            if pl != target_plate and m is not None]
+    sims = [(pl, round(s, 3)) for pl, s in sims if s >= floor]
+    sims.sort(key=lambda x: -x[1])
+    return sims[:max_results]

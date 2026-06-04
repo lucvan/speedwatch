@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Unidentified — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+  <h5 class="mb-0">Unidentified vehicles <span class="badge bg-secondary">{{ clusters|length }} groups</span></h5>
+  {% if needing_embedding %}
+  <button id="bf-btn" class="btn btn-sm btn-outline-secondary" onclick="backfill()">
+    Embed {{ needing_embedding }} older pass(es)
+  </button>
+  <span id="bf-status" class="small text-muted"></span>
+  {% endif %}
+</div>
+
+{% if not embed_available %}
+<div class="alert alert-warning py-2 small">
+  <strong>Re-ID model not installed.</strong> Plateless passes can't be visually grouped yet.
+  Run the model conversion in <code>bootstrap.ps1</code> (creates
+  <code>models/vehicle-reid-0001.onnx</code>), then restart the service and use
+  <em>Embed older passes</em> above to backfill.
+</div>
+{% endif %}
+
+<p class="text-muted small">
+  Passes with no recognised plate, grouped by how similar the cars look (Vehicle Re-ID).
+  For each group you can <strong>promote it to a vehicle</strong> (give it a name/label — it then
+  appears in the Vehicles list) or <strong>merge it into an existing plate</strong>. Visual grouping
+  is a suggestion — check the thumbnails before confirming. Untick any pass that doesn't belong.
+</p>
+
+{% if clusters %}
+<datalist id="known-plates">
+  {% for pl in known_plates %}<option value="{{ pl }}">{% endfor %}
+</datalist>
+
+{% for c in clusters %}
+<div class="card mb-3" id="cluster-{{ loop.index }}">
+  <div class="card-header small d-flex align-items-center gap-3 flex-wrap">
+    <span class="fw-bold">Group {{ loop.index }}</span>
+    <span class="text-muted">{{ c.size }} pass(es) · top {{ fmt_mph(c.top_speed) }} mph</span>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <input list="known-plates" class="form-control form-control-sm font-monospace cl-plate"
+             style="width:170px" placeholder="plate / label">
+      <button class="btn btn-sm btn-primary" onclick="assignCluster(this, {{ loop.index }})">
+        Promote / merge
+      </button>
+      <span class="cl-status small text-muted"></span>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="d-flex flex-wrap gap-3">
+      {% for p in c.passes %}
+      <label class="text-center" style="cursor:pointer" title="{{ fmt_mph(p.sw_speed_mph) }} mph · {{ fmt_ts(p.start_ts) }}">
+        <div><input type="checkbox" class="cl-cb" value="{{ p.id }}" checked></div>
+        {% if p.car_crop_path %}<img src="/{{ p.car_crop_path }}" style="height:90px;border-radius:4px" loading="lazy">
+        {% elif p.entry_frame_path %}<img src="/{{ p.entry_frame_path }}" style="height:90px;border-radius:4px" loading="lazy">
+        {% else %}<span class="text-muted small">no image</span>{% endif %}
+        <div class="small text-info">{{ fmt_mph(p.sw_speed_mph) }} mph</div>
+        <div class="text-muted" style="font-size:.65rem">
+          <a href="/session/{{ p.session_id }}">#{{ p.id }}</a></div>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% elif embed_available %}
+<div class="alert alert-secondary">No unidentified vehicles — every pass with an embedding already
+  has a plate or has been assigned. (Plateless passes appear here once they've been embedded.)</div>
+{% endif %}
+
+<script>
+async function assignCluster(btn, idx) {
+  const card = document.getElementById('cluster-' + idx);
+  const plate = card.querySelector('.cl-plate').value.trim().toUpperCase();
+  const status = card.querySelector('.cl-status');
+  const ids = Array.from(card.querySelectorAll('.cl-cb:checked')).map(c => parseInt(c.value));
+  if (!plate) { status.textContent = 'enter a plate/label'; status.className = 'cl-status small text-warning'; return; }
+  if (!ids.length) { status.textContent = 'no passes ticked'; status.className = 'cl-status small text-warning'; return; }
+  status.textContent = 'saving…'; status.className = 'cl-status small text-muted';
+  const r = await fetch('/api/passes/assign-bulk', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({plate, pass_ids: ids})
+  });
+  const d = await r.json();
+  if (r.ok && d.ok) {
+    status.innerHTML = '→ <a href="/vehicle/' + d.plate + '">' + d.plate + '</a> (' + d.count + ')';
+    status.className = 'cl-status small text-success';
+    card.querySelectorAll('.cl-cb:checked').forEach(c => c.closest('label').style.opacity = 0.4);
+  } else {
+    status.textContent = 'failed: ' + (d.detail || r.status); status.className = 'cl-status small text-danger';
+  }
+}
+async function backfill() {
+  const btn = document.getElementById('bf-btn'), st = document.getElementById('bf-status');
+  btn.disabled = true; st.textContent = 'embedding stored crops… (may take a moment)';
+  try {
+    const r = await fetch('/api/embeddings/backfill', {method: 'POST'});
+    const d = await r.json();
+    st.textContent = d.error ? d.error : ('done — ' + d.updated + ' of ' + d.total + ' embedded');
+    if (!d.error) setTimeout(() => location.reload(), 1200);
+  } catch (e) { st.textContent = 'failed: ' + e; btn.disabled = false; }
+}
+</script>
+{% endblock %}

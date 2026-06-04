@@ -29,6 +29,7 @@ from fastapi.templating import Jinja2Templates
 from . import config, db
 from . import calibration as cal_mod
 from . import intrinsics as intr_mod
+from . import embed as embed_mod
 from . import vehicles as vehicles_mod
 
 log = logging.getLogger(__name__)
@@ -117,10 +118,12 @@ async def session_detail(request: Request, session_id: int):
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     passes = await _get_passes_for_session(session_id)
+    known_plates = [r["plate"] for r in await db.list_distinct_plates()]
     return templates.TemplateResponse("detail.html", {
         "request": request,
         "session": session,
         "passes": passes,
+        "known_plates": known_plates,
     })
 
 
@@ -181,12 +184,37 @@ async def vehicle_detail(request: Request, plate: str):
     candidates = await db.list_distinct_plates()
     target_desc = vehicle.get("user_description") or vehicle.get("description")
     suggestions = vehicles_mod.similar_plates(plate, candidates, target_desc=target_desc)
+
+    # Visually-similar vehicles (Re-ID) — appearance corroboration / merge candidates.
+    visual_raw = await vehicles_mod.visual_similar_vehicles(plate)
+    visual = []
+    if visual_raw:
+        repmap = {v["plate"]: v["rep_image_path"] for v in await db.list_vehicles(min_passes=1)}
+        visual = [{"plate": pl, "sim": s, "rep_image": repmap.get(pl),
+                   "strong": s >= config.REID_SIM_THRESHOLD} for pl, s in visual_raw]
+
     return templates.TemplateResponse("vehicle.html", {
         "request": request,
         "vehicle": vehicle,
         "passes": passes,
         "aliases": aliases,
         "suggestions": suggestions,
+        "visual": visual,
+        "reid_available": embed_mod.available(),
+    })
+
+
+@app.get("/unidentified", response_class=HTMLResponse)
+async def unidentified_page(request: Request):
+    clusters = await vehicles_mod.unidentified_clusters()
+    known_plates = [r["plate"] for r in await db.list_distinct_plates()]
+    needing = len(await db.passes_needing_embedding())
+    return templates.TemplateResponse("unidentified.html", {
+        "request": request,
+        "clusters": clusters,
+        "known_plates": known_plates,
+        "embed_available": embed_mod.available(),
+        "needing_embedding": needing,
     })
 
 
@@ -354,6 +382,43 @@ async def api_confirm_pass(pass_id: int, request: Request):
     confirmed = bool(body.get("confirmed", True))
     await db.set_pass_confirmed(pass_id, confirmed)
     return JSONResponse({"ok": True, "confirmed": confirmed})
+
+
+@app.post("/api/passes/{pass_id}/assign")
+async def api_assign_pass(pass_id: int, request: Request):
+    """Attach a pass to a vehicle by plate (for plateless or mis-read passes the user can
+    visually confirm). Body: {plate: str}. An empty plate clears the assignment."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    plate = (body.get("plate") or "").strip().upper()
+    if not plate:
+        await db.unassign_pass(pass_id)
+        return JSONResponse({"ok": True, "assigned": None})
+    canon = await db.assign_pass_to_vehicle(pass_id, plate)
+    return JSONResponse({"ok": True, "assigned": canon})
+
+
+@app.post("/api/passes/assign-bulk")
+async def api_assign_bulk(request: Request):
+    """Assign many passes to one vehicle at once. Body: {pass_ids: [int], plate: str}.
+    Used by the Unidentified review queue to promote a cluster to a (new or existing) vehicle."""
+    body = await request.json()
+    plate = (body.get("plate") or "").strip().upper()
+    pass_ids = body.get("pass_ids") or []
+    if not plate or not pass_ids:
+        raise HTTPException(status_code=422, detail="plate and pass_ids required")
+    canon = None
+    for pid in pass_ids:
+        canon = await db.assign_pass_to_vehicle(int(pid), plate)
+    return JSONResponse({"ok": True, "plate": canon, "count": len(pass_ids)})
+
+
+@app.post("/api/embeddings/backfill")
+async def api_embeddings_backfill():
+    """Compute Re-ID embeddings for existing passes that have a crop but no embedding."""
+    return JSONResponse(await vehicles_mod.backfill_embeddings())
 
 
 @app.post("/api/vehicle/{plate}/confirm")

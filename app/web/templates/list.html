@@ -78,9 +78,19 @@
       <span class="text-muted small"> mph</span>
     </td>
     <td>
-      {% if p.plate %}
-      <span class="badge bg-dark border border-warning text-warning font-monospace"
-            title="OCR confidence {{ '%.0f'|format((p.plate_confidence or 0) * 100) }}%">{{ p.plate }}</span>
+      {% if p.eff_plate %}
+      <a href="/vehicle/{{ p.eff_plate }}" class="text-decoration-none"
+         title="OCR read: {{ p.plate or 'none' }} · open vehicle page">
+        <span class="badge bg-dark border border-warning text-warning font-monospace">{{ p.eff_plate }}</span>
+      </a>
+      {% if not p.plate %}
+        <span class="badge bg-info text-dark" title="manually assigned to this vehicle">assigned</span>
+      {% elif p.eff_plate != p.plate %}
+        <span class="badge bg-secondary" title="OCR read {{ p.plate }} — merged into {{ p.eff_plate }}">merged</span>
+      {% endif %}
+      {% if p.veh_user_description or p.veh_description %}
+      <div class="text-muted" style="font-size:.7rem">{{ p.veh_user_description or p.veh_description }}</div>
+      {% endif %}
       {% else %}
       <span class="text-muted small">—</span>
       {% endif %}

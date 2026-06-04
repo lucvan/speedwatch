@@ -98,6 +98,29 @@
     <div class="small text-muted mb-2">No similar plates found to suggest.</div>
     {% endif %}
 
+    <div class="small text-muted mb-1 mt-3">
+      Visually similar vehicles <span class="badge bg-info text-dark">Re-ID</span>
+      — closest-looking cars by appearance (any plate); tick to include in a merge.
+      A <span class="badge bg-success">strong</span> badge means it clears the same-car threshold.
+    </div>
+    {% if not reid_available %}
+    <div class="small text-muted mb-2">Re-ID model not installed — visual matching disabled.</div>
+    {% elif visual %}
+    <div class="d-flex flex-wrap gap-3 mb-2">
+      {% for s in visual %}
+      <label class="d-flex flex-column align-items-center gap-1" style="cursor:pointer" title="cosine similarity {{ s.sim }}">
+        <input type="checkbox" class="merge-cb" value="{{ s.plate }}">
+        {% if s.rep_image %}<img src="/{{ s.rep_image }}" style="height:64px;border-radius:4px" loading="lazy">{% else %}<span class="text-muted small">no image</span>{% endif %}
+        <a href="/vehicle/{{ s.plate }}"><span class="badge bg-dark border {{ 'border-success' if s.strong else 'border-info' }} font-monospace">{{ s.plate }}</span></a>
+        <span class="text-muted" style="font-size:.65rem">
+          sim {{ s.sim }}{% if s.strong %} <span class="badge bg-success">strong</span>{% endif %}</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="small text-muted mb-2">No visually similar vehicles found (closest are below the display floor).</div>
+    {% endif %}
+
     <div class="d-flex align-items-center gap-2">
       <label class="small text-muted mb-0">Correct plate:</label>
       <input id="canonical" class="form-control form-control-sm font-monospace" style="width:140px"

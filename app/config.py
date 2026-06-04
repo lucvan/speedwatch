@@ -74,6 +74,23 @@ VEHICLE_VISION_PROMPT = os.getenv(
 # Max soft edit-distance for suggesting two plates are the same car (OCR-confusable subs cost 0.4).
 ALIAS_SUGGEST_MAXDIST = float(os.getenv("ALIAS_SUGGEST_MAXDIST", "1.5"))
 
+# Vehicle Re-ID image embeddings (visual grouping of plateless / look-alike cars).
+# Model: OpenVINO OMZ `vehicle-reid-0001` (OSNet, MIT) exported to ONNX by bootstrap.ps1.
+# Runs on onnxruntime (CPU by default — the model is tiny, ~2.6 GFLOPs — leaving DML for YOLO).
+# If the model file is absent, embedding features no-op and the rest of the pipeline runs normally.
+REID_MODEL         = os.getenv("REID_MODEL", "models/vehicle-reid-0001.onnx")
+REID_PROVIDER      = os.getenv("REID_PROVIDER", "cpu")     # cpu | dml
+# Cosine similarity to call two crops the same car. Needs tuning on real footage: too low
+# over-merges distinct look-alikes, too high splits one car into several groups. Start
+# conservative (more, purer groups) and lower it if the same car keeps splitting.
+REID_SIM_THRESHOLD = float(os.getenv("REID_SIM_THRESHOLD", "0.7"))
+
+def reid_model_path() -> Path:
+    p = Path(REID_MODEL)
+    if not p.is_absolute():
+        p = Path(INSTALL_DIR) / p
+    return p
+
 # Storage
 DATA_DIR   = os.getenv("DATA_DIR", str(Path(__file__).parent.parent / "data"))
 INSTALL_DIR = str(Path(__file__).parent.parent)

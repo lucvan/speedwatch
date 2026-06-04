@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS pass (
     user_corrected_mph       REAL,
     user_notes               TEXT,
     confirmed_speeder        INTEGER NOT NULL DEFAULT 0,
+    assigned_plate           TEXT,
+    embedding                BLOB,
     created_at               REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pass_session    ON pass(session_id);
@@ -129,6 +131,16 @@ async def init_db():
             pass
         try:
             await conn.execute("ALTER TABLE vehicle ADD COLUMN confirmed_speeder INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        # Manual vehicle assignment: attach a plateless / mis-read pass to a vehicle by plate.
+        try:
+            await conn.execute("ALTER TABLE pass ADD COLUMN assigned_plate TEXT")
+        except Exception:
+            pass
+        # Vehicle Re-ID image embedding (float32 vector as BLOB) for visual grouping.
+        try:
+            await conn.execute("ALTER TABLE pass ADD COLUMN embedding BLOB")
         except Exception:
             pass
         for col, default in (("frame_w", 1280), ("frame_h", 720)):
@@ -314,9 +326,13 @@ async def list_passes(
         "confidence":   "p.confidence ASC",
     }.get(order_by, "p.created_at DESC")
     sql = f"""
-        SELECT p.*, s.start_ts, s.camera, s.clip_path as session_clip_path
+        SELECT p.*, s.start_ts, s.camera, s.clip_path as session_clip_path,
+               {_EFF} AS eff_plate,
+               v.user_description AS veh_user_description,
+               v.description      AS veh_description
         FROM pass p
         JOIN pass_session s ON s.id = p.session_id
+        LEFT JOIN vehicle v ON v.plate = {_EFF}
         {where}
         ORDER BY {order_sql}
         LIMIT ? OFFSET ?
@@ -401,8 +417,23 @@ async def delete_pass(pass_id: int) -> dict | None:
 # Leaderboard / per-plate stats are computed live from the pass table; the vehicle
 # table only holds enrichment (AI + manual descriptions, representative image).
 
-_VEHICLE_STATS_SQL = """
-    SELECT COALESCE(a.canonical, p.plate) AS plate,
+def _eff_plate(alias: str = "p") -> str:
+    """SQL expression for a pass's effective (canonical) plate. A manual `assigned_plate`
+    wins (resolved through any alias), then the OCR plate's alias, then the raw OCR plate.
+    This is what lets plateless / mis-read passes be attached to a vehicle."""
+    return (
+        "COALESCE("
+        f"(SELECT ap.canonical FROM plate_alias ap WHERE ap.alias = {alias}.assigned_plate),"
+        f"{alias}.assigned_plate,"
+        f"(SELECT op.canonical FROM plate_alias op WHERE op.alias = {alias}.plate),"
+        f"{alias}.plate)"
+    )
+
+
+_EFF = _eff_plate("p")
+
+_VEHICLE_STATS_SQL = f"""
+    SELECT {_EFF}                         AS plate,
            COUNT(*)                       AS passes,
            MAX(p.sw_speed_mph)            AS max_mph,
            AVG(p.sw_speed_mph)            AS avg_mph,
@@ -410,9 +441,8 @@ _VEHICLE_STATS_SQL = """
            MAX(s.start_ts)                AS last_seen,
            MIN(s.start_ts)                AS first_seen
     FROM pass p JOIN pass_session s ON s.id = p.session_id
-    LEFT JOIN plate_alias a ON a.alias = p.plate
-    WHERE p.plate IS NOT NULL AND p.plate <> ''
-    GROUP BY COALESCE(a.canonical, p.plate)
+    WHERE {_EFF} IS NOT NULL AND {_EFF} <> ''
+    GROUP BY {_EFF}
 """
 
 
@@ -424,8 +454,13 @@ async def list_vehicles(order_by: str = "max_mph", min_passes: int = 1) -> list[
         "last_seen": "last_seen DESC",
     }.get(order_by, "max_mph DESC")
     sql = f"""
-        SELECT st.*, v.description, v.user_description, v.user_notes, v.rep_image_path,
-               v.confirmed_speeder
+        SELECT st.*, v.description, v.user_description, v.user_notes, v.confirmed_speeder,
+               COALESCE(v.rep_image_path, (
+                   SELECT pc.car_crop_path FROM pass pc
+                   WHERE {_eff_plate('pc')} = st.plate
+                     AND pc.car_crop_path IS NOT NULL AND pc.car_crop_path <> ''
+                   ORDER BY COALESCE(pc.plate_confidence, 0) DESC LIMIT 1
+               )) AS rep_image_path
         FROM ( {_VEHICLE_STATS_SQL} ) st
         LEFT JOIN vehicle v ON v.plate = st.plate
         WHERE st.passes >= ?
@@ -452,6 +487,19 @@ async def get_vehicle(plate: str) -> dict | None:
         meta = await cur.fetchone()
         if meta:
             v.update({k: meta[k] for k in meta.keys() if k != "plate"})
+        # Fall back to a representative pass crop if no rep image is stored (e.g. a vehicle
+        # created by a merge-to-new-plate, or one built only from assigned plateless passes).
+        if not v.get("rep_image_path"):
+            cur = await conn.execute(
+                f"""SELECT pc.car_crop_path FROM pass pc
+                    WHERE {_eff_plate('pc')} = ?
+                      AND pc.car_crop_path IS NOT NULL AND pc.car_crop_path <> ''
+                    ORDER BY COALESCE(pc.plate_confidence, 0) DESC LIMIT 1""",
+                (plate,),
+            )
+            crop = await cur.fetchone()
+            if crop:
+                v["rep_image_path"] = crop[0]
         return v
 
 
@@ -460,10 +508,9 @@ async def list_passes_for_plate(plate: str) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
-            """SELECT p.*, s.start_ts, s.clip_path AS session_clip_path
-               FROM pass p JOIN pass_session s ON s.id = p.session_id
-               LEFT JOIN plate_alias a ON a.alias = p.plate
-               WHERE COALESCE(a.canonical, p.plate) = ? ORDER BY s.start_ts DESC""",
+            f"""SELECT p.*, s.start_ts, s.clip_path AS session_clip_path
+                FROM pass p JOIN pass_session s ON s.id = p.session_id
+                WHERE {_EFF} = ? ORDER BY s.start_ts DESC""",
             (plate,),
         )
         return [dict(r) for r in await cur.fetchall()]
@@ -502,6 +549,9 @@ async def add_plate_aliases(canonical: str, aliases: list[str]) -> str:
         await conn.execute("DELETE FROM plate_alias WHERE alias=?", (root,))
         await conn.commit()
     await ensure_vehicle(root)
+    # A merge to a brand-new corrected plate starts with no rep image — inherit one from
+    # the now-grouped passes so the merged vehicle still has a thumbnail.
+    await ensure_vehicle_rep(root)
     return root
 
 
@@ -523,13 +573,12 @@ async def list_distinct_plates() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
-            """SELECT COALESCE(a.canonical, p.plate) AS plate, COUNT(*) AS passes,
-                      v.description AS description, v.user_description AS user_description
-               FROM pass p
-               LEFT JOIN plate_alias a ON a.alias = p.plate
-               LEFT JOIN vehicle v ON v.plate = COALESCE(a.canonical, p.plate)
-               WHERE p.plate IS NOT NULL AND p.plate <> ''
-               GROUP BY COALESCE(a.canonical, p.plate)""",
+            f"""SELECT {_EFF} AS plate, COUNT(*) AS passes,
+                       v.description AS description, v.user_description AS user_description
+                FROM pass p
+                LEFT JOIN vehicle v ON v.plate = {_EFF}
+                WHERE {_EFF} IS NOT NULL AND {_EFF} <> ''
+                GROUP BY {_EFF}""",
         )
         return [dict(r) for r in await cur.fetchall()]
 
@@ -578,6 +627,98 @@ async def update_vehicle_rep_image(plate: str, image_path: str, plate_conf: floa
             (image_path, plate_conf, plate, plate_conf),
         )
         await conn.commit()
+
+
+async def ensure_vehicle_rep(plate: str) -> None:
+    """Give a vehicle a representative image if it has none, derived from its own passes'
+    car crops (best plate confidence wins). Used after a merge-to-new-plate or after a
+    plateless pass is assigned, so the merged/assigned vehicle inherits a thumbnail."""
+    await ensure_vehicle(plate)
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute("SELECT rep_image_path FROM vehicle WHERE plate=?", (plate,))
+        row = await cur.fetchone()
+        if row and row[0]:
+            return
+        cur = await conn.execute(
+            f"""SELECT pc.car_crop_path, pc.plate_confidence FROM pass pc
+                WHERE {_eff_plate('pc')} = ?
+                  AND pc.car_crop_path IS NOT NULL AND pc.car_crop_path <> ''
+                ORDER BY COALESCE(pc.plate_confidence, 0) DESC LIMIT 1""",
+            (plate,),
+        )
+        crop = await cur.fetchone()
+        if crop:
+            await conn.execute(
+                "UPDATE vehicle SET rep_image_path=?, rep_plate_conf=COALESCE(rep_plate_conf, ?) WHERE plate=?",
+                (crop[0], crop[1] or 0.0, plate),
+            )
+            await conn.commit()
+
+
+async def assign_pass_to_vehicle(pass_id: int, plate: str) -> str:
+    """Manually attach a pass (typically plateless or mis-read) to a vehicle by plate.
+    Returns the canonical plate the pass now belongs to. Reversible via unassign_pass."""
+    canon = await canonical_plate(plate.strip().upper())
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE pass SET assigned_plate=? WHERE id=?", (canon, pass_id))
+        await conn.commit()
+    await ensure_vehicle(canon)
+    await ensure_vehicle_rep(canon)
+    return canon
+
+
+async def unassign_pass(pass_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE pass SET assigned_plate=NULL WHERE id=?", (pass_id,))
+        await conn.commit()
+
+
+# ── Vehicle Re-ID embeddings (visual grouping) ───────────────────────────────
+
+async def set_pass_embedding(pass_id: int, blob: bytes) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE pass SET embedding=? WHERE id=?", (blob, pass_id))
+        await conn.commit()
+
+
+async def passes_needing_embedding() -> list[dict]:
+    """Passes that have a car crop but no embedding yet (for backfill)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            """SELECT id, car_crop_path, entry_frame_raw_path, exit_frame_raw_path
+               FROM pass
+               WHERE embedding IS NULL
+                 AND car_crop_path IS NOT NULL AND car_crop_path <> ''"""
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def plateless_embedded_passes() -> list[dict]:
+    """Unidentified passes (no effective plate) that have an embedding — clustering input."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            f"""SELECT p.id, p.embedding, p.car_crop_path, p.entry_frame_path,
+                       p.session_id, p.sw_speed_mph, p.confidence, s.start_ts
+                FROM pass p JOIN pass_session s ON s.id = p.session_id
+                WHERE {_EFF} IS NULL AND p.embedding IS NOT NULL
+                ORDER BY s.start_ts DESC"""
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def embedded_vehicle_passes() -> list[dict]:
+    """(effective_plate, embedding) for every identified pass that has an embedding —
+    used to build per-vehicle mean embeddings for visual-similarity suggestions."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            f"""SELECT {_EFF} AS plate, p.embedding
+                FROM pass p
+                WHERE {_EFF} IS NOT NULL AND p.embedding IS NOT NULL"""
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
 
 async def set_vehicle_description(plate: str, description: str) -> None:
