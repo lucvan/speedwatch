@@ -91,6 +91,29 @@
         <div id="point-status" class="text-muted small mt-1">0 / 4 corners selected</div>
       </div>
     </div>
+
+    <div class="card mb-3">
+      <div class="card-header small d-flex align-items-center gap-2">
+        ANPR ignore zones <span class="text-muted">— mask out a fixed background plate</span>
+        <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="maskRefresh()">New snapshot</button>
+      </div>
+      <div class="card-body p-2">
+        <p class="text-muted small mb-2">
+          If a parked / background car's plate sits inside passing cars' crops and keeps
+          getting read, <strong>drag a box over that plate</strong>. Any plate detected inside
+          a red box is ignored — including misreads of it. A car that actually drives through
+          still reads fine elsewhere. Takes effect on the next vehicle.
+        </p>
+        <canvas id="mask-canvas" style="width:100%;cursor:crosshair;border-radius:4px"></canvas>
+        <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+          <span id="mask-status" class="text-muted small">0 ignore zone(s).</span>
+          <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="maskUndo()">Undo</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="maskClear()">Clear all</button>
+          <button class="btn btn-sm btn-primary" onclick="maskSave()">Save ignore zones</button>
+        </div>
+        <div id="mask-result" class="small mt-2"></div>
+      </div>
+    </div>
   </div>
 
   <div class="col-lg-4">
@@ -159,5 +182,6 @@
 <script src="/static/calibrate.js?v={{ static_v }}"></script>
 <script>
   initCalibration('/snapshot/{{ camera }}', '{{ camera }}');
+  initAnprMask('/snapshot/{{ camera }}', '{{ camera }}', {{ anpr_mask|tojson }});
 </script>
 {% endblock %}

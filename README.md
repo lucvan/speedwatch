@@ -217,6 +217,17 @@ calibration after (re)running lens calibration, and whenever the camera is moved
 > `DETECT_FPS`), not wall-clock-at-read. Read-time clock jitter used to corrupt `dt` in
 > `speed = displacement / dt`, which scaled with speed and threw off faster vehicles.
 
+### ANPR ignore zones (optional)
+
+ANPR reads the plate inside each moving car's bounding-box crop. If a **parked or background
+car** sits where its plate falls inside those crops, the detector can keep reading that
+background plate for every pass (often at higher OCR confidence than a moving car's blurred
+plate). On `/calibrate`, the **ANPR ignore zones** tool lets you drag a box over the offending
+plate; any plate whose detection centre lands inside a box is discarded — including misreads
+of it, since the filter is positional, not value-based. A car that genuinely drives through is
+unaffected (its plate reads elsewhere in the frame). Zones are stored per camera in
+`<DATA_DIR>/anpr_mask/<camera>.json` and take effect on the next vehicle (no restart).
+
 ## Vehicle descriptions & grouping
 
 Passes that carry a recognised plate are grouped into a **per-plate vehicle registry**
@@ -263,10 +274,14 @@ plate:
 
 - **Vehicle page:** a "visually similar vehicles" list suggests merge candidates by
   appearance, alongside the plate/description signals.
+- **Pass / session page:** each pass shows the closest-looking **existing vehicles**, so you
+  can re-allocate a single pass to a known vehicle in one click (handy when the plate wasn't
+  read but you recognise the car).
 - **Unidentified page:** passes with **no plate** are clustered by visual similarity so even
-  plateless cars get grouped. Promote a cluster to a vehicle (give it a label — it then
-  appears in the Vehicles list) or merge it into an existing plate. Older passes are embedded
-  on demand with the **Embed older passes** button.
+  plateless cars get grouped. Each cluster also suggests the closest **existing** vehicles, so
+  you can merge it into a known vehicle — or promote it to a new one (give it a label and it
+  appears in the Vehicles list). Older passes are embedded on demand with the **Embed older
+  passes** button.
 
 Visual similarity finds **look-alikes**, not proven identity (two identical cars embed close),
 so it is always a suggestion you confirm. Tune `REID_SIM_THRESHOLD` on real footage: lower it

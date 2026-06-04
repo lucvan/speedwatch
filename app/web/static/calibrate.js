@@ -281,6 +281,101 @@ function resetPoints() {
   _redraw();
 }
 
+// ── ANPR ignore-zone tool ────────────────────────────────────────────────────
+// Drag to draw red rectangles over fixed background plates; any plate detected inside
+// one is discarded by the ingest pipeline. Rectangles are stored normalised (0..1).
+let _mCanvas = null, _mCtx = null, _mImg = null, _mCamera = '';
+let _mRects = [], _mDrag = null;
+
+function initAnprMask(snapshotUrl, camera, rects) {
+  _mCamera = camera;
+  _mRects  = Array.isArray(rects) ? rects.map(r => r.slice()) : [];
+  _mCanvas = document.getElementById('mask-canvas');
+  if (!_mCanvas) return;
+  _mCtx = _mCanvas.getContext('2d');
+
+  _mImg = new Image();
+  _mImg.crossOrigin = 'anonymous';
+  _mImg.onload = () => {
+    _mCanvas.width  = _mImg.naturalWidth;
+    _mCanvas.height = _mImg.naturalHeight;
+    _mRedraw();
+  };
+  _mImg.onerror = () => {
+    _mCanvas.width = 640; _mCanvas.height = 360;
+    _mCtx.fillStyle = '#333'; _mCtx.fillRect(0, 0, 640, 360);
+    _mCtx.fillStyle = '#aaa'; _mCtx.font = '18px sans-serif';
+    _mCtx.fillText('Snapshot unavailable', 20, 40);
+  };
+  _mImg.src = snapshotUrl + '?t=' + Date.now();
+
+  _mCanvas.addEventListener('mousedown', _mDown);
+  _mCanvas.addEventListener('mousemove', _mMove);
+  window.addEventListener('mouseup', _mUp);
+  _mUpdateStatus();
+}
+
+function _mPos(e) {
+  const r = _mCanvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (_mCanvas.width  / r.width)  / _mCanvas.width,
+    y: (e.clientY - r.top)  * (_mCanvas.height / r.height) / _mCanvas.height,
+  };
+}
+function _mDown(e) { const p = _mPos(e); _mDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }; }
+function _mMove(e) { if (!_mDrag) return; const p = _mPos(e); _mDrag.x1 = p.x; _mDrag.y1 = p.y; _mRedraw(); }
+function _mUp() {
+  if (!_mDrag) return;
+  const d = _mDrag; _mDrag = null;
+  const x1 = Math.min(d.x0, d.x1), y1 = Math.min(d.y0, d.y1);
+  const x2 = Math.max(d.x0, d.x1), y2 = Math.max(d.y0, d.y1);
+  if (x2 - x1 >= 0.01 && y2 - y1 >= 0.01) { _mRects.push([x1, y1, x2, y2]); _mUpdateStatus(); }
+  _mRedraw();
+}
+function _mDrawRect(r, active) {
+  const W = _mCanvas.width, H = _mCanvas.height;
+  const x = r[0] * W, y = r[1] * H, w = (r[2] - r[0]) * W, h = (r[3] - r[1]) * H;
+  _mCtx.fillStyle = active ? 'rgba(255,60,60,0.20)' : 'rgba(255,60,60,0.30)';
+  _mCtx.fillRect(x, y, w, h);
+  _mCtx.strokeStyle = '#ff3c3c'; _mCtx.lineWidth = 2; _mCtx.strokeRect(x, y, w, h);
+}
+function _mRedraw() {
+  if (!_mCtx) return;
+  _mCtx.clearRect(0, 0, _mCanvas.width, _mCanvas.height);
+  if (_mImg && _mImg.complete && _mImg.naturalWidth > 0) _mCtx.drawImage(_mImg, 0, 0);
+  _mRects.forEach(r => _mDrawRect(r, false));
+  if (_mDrag) _mDrawRect([Math.min(_mDrag.x0, _mDrag.x1), Math.min(_mDrag.y0, _mDrag.y1),
+                          Math.max(_mDrag.x0, _mDrag.x1), Math.max(_mDrag.y0, _mDrag.y1)], true);
+}
+function _mUpdateStatus() {
+  const el = document.getElementById('mask-status');
+  if (el) el.textContent = `${_mRects.length} ignore zone(s). Drag on the image to add one.`;
+}
+function maskUndo()  { _mRects.pop(); _mUpdateStatus(); _mRedraw(); }
+function maskClear() { _mRects = []; _mUpdateStatus(); _mRedraw(); }
+function maskRefresh() { if (_mImg) _mImg.src = '/snapshot/' + encodeURIComponent(_mCamera) + '?t=' + Date.now(); }
+async function maskSave() {
+  const el = document.getElementById('mask-result');
+  el.textContent = 'Saving…'; el.className = 'small mt-2 text-muted';
+  try {
+    const r = await fetch('/api/anpr-mask/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ camera: _mCamera, rects: _mRects }),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      el.textContent = `Saved ${d.count} ignore zone(s). Live on the next vehicle.`;
+      el.className = 'small mt-2 text-success';
+    } else {
+      el.textContent = `Error: ${d.detail || JSON.stringify(d)}`;
+      el.className = 'small mt-2 text-danger';
+    }
+  } catch (err) {
+    el.textContent = `Network error: ${err.message}`;
+    el.className = 'small mt-2 text-danger';
+  }
+}
+
 async function saveCalibration() {
   if (_points.length < 4) {
     alert('Please click all 4 corners first.');

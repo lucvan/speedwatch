@@ -31,6 +31,7 @@ from . import calibration as cal_mod
 from . import intrinsics as intr_mod
 from . import embed as embed_mod
 from . import vehicles as vehicles_mod
+from . import anpr_mask as anpr_mask_mod
 
 log = logging.getLogger(__name__)
 
@@ -203,11 +204,16 @@ async def session_detail(request: Request, session_id: int):
         raise HTTPException(status_code=404, detail="Session not found")
     passes = await _get_passes_for_session(session_id)
     known_plates = [r["plate"] for r in await db.list_distinct_plates()]
+    reid_available = embed_mod.available()
+    if reid_available:
+        for p in passes:
+            p["similar"] = await vehicles_mod.similar_vehicles_for_pass(p["id"])
     return templates.TemplateResponse("detail.html", {
         "request": request,
         "session": session,
         "passes": passes,
         "known_plates": known_plates,
+        "reid_available": reid_available,
     })
 
 
@@ -237,6 +243,7 @@ async def calibrate_page(request: Request):
         "camera": config.CAMERA_NAME,
         "calibrations": cals,
         "intrinsics": intrinsics,
+        "anpr_mask": anpr_mask_mod.load(config.CAMERA_NAME),
         "static_v": static_v,
         "queue_size": 0,
     })
@@ -834,6 +841,18 @@ async def lens_preview(camera: str, k1: float = 0.0, k2: float = 0.0,
     if not ok:
         raise HTTPException(status_code=500, detail="encode failed")
     return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
+@app.post("/api/anpr-mask/save")
+async def api_anpr_mask_save(request: Request):
+    """Save the per-camera ANPR ignore zones. Body: {camera, rects:[[x1,y1,x2,y2],...]}
+    in normalised 0..1 coords. Takes effect on the next vehicle (mtime-cached, no restart)."""
+    body = await request.json()
+    camera = body.get("camera", config.CAMERA_NAME)
+    rects = body.get("rects", [])
+    anpr_mask_mod.save(camera, rects)
+    saved = anpr_mask_mod.load(camera)
+    return JSONResponse({"ok": True, "count": len(saved)})
 
 
 @app.post("/api/lens/save")

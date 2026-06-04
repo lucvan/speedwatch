@@ -280,36 +280,74 @@ async def backfill_embeddings(limit: int | None = None) -> dict:
     return result
 
 
+# Floor for *showing* a visual candidate. Lower than REID_SIM_THRESHOLD (the "likely same
+# car" bar) so the closest look-alikes are always offered for review; callers flag which
+# clear the threshold as strong matches.
+_VISUAL_FLOOR = 0.4
+
+
+async def _vehicle_means() -> dict[str, "np.ndarray"]:
+    """Per-vehicle mean Re-ID embedding, keyed by canonical plate."""
+    rows = await db.embedded_vehicle_passes()
+    from collections import defaultdict
+    vecs: dict[str, list] = defaultdict(list)
+    for r in rows:
+        if r.get("plate") and r.get("embedding") is not None:
+            vecs[r["plate"]].append(embed_mod.from_blob(r["embedding"]))
+    return {pl: embed_mod.mean_vector(vs) for pl, vs in vecs.items()}
+
+
+def _rank_against_means(target, means: dict, exclude: str | None = None,
+                        max_results: int = 6, floor: float = _VISUAL_FLOOR) -> list[tuple[str, float]]:
+    """Closest vehicle means to `target` (cosine), above `floor`, closest first."""
+    if target is None:
+        return []
+    sims = [(pl, embed_mod.cosine(target, m)) for pl, m in means.items()
+            if pl != exclude and m is not None]
+    sims = [(pl, round(s, 3)) for pl, s in sims if s >= floor]
+    sims.sort(key=lambda x: -x[1])
+    return sims[:max_results]
+
+
+async def _attach_rep_images(ranked: list[tuple[str, float]]) -> list[dict]:
+    """Turn (plate, sim) pairs into display dicts with a representative image + strong flag."""
+    if not ranked:
+        return []
+    repmap = {v["plate"]: v["rep_image_path"] for v in await db.list_vehicles(min_passes=1)}
+    return [{"plate": pl, "sim": s, "rep_image": repmap.get(pl),
+             "strong": s >= config.REID_SIM_THRESHOLD} for pl, s in ranked]
+
+
 async def unidentified_clusters() -> list[dict]:
     """Group plateless passes (no effective plate) into visually-similar clusters for review.
-    Returns clusters (largest first), each with its passes and a representative crop."""
+    Each cluster also carries `similar`: the closest existing vehicles by appearance, so a
+    cluster can be merged into an existing vehicle (not only promoted to a new one)."""
     if not embed_mod.available():
         return []
     rows = await db.plateless_embedded_passes()
     if not rows:
         return []
     items = [(r["id"], embed_mod.from_blob(r["embedding"])) for r in rows]
+    vec_by_id = {i: v for i, v in items}
     by_id = {r["id"]: r for r in rows}
     groups = embed_mod.cluster(items)
+    means = await _vehicle_means()
     out = []
     for members in groups:
         passes = [by_id[i] for i in members]
         rep = next((p.get("car_crop_path") or p.get("entry_frame_path")
                     for p in passes if p.get("car_crop_path") or p.get("entry_frame_path")), None)
+        cmean = embed_mod.mean_vector([vec_by_id[i] for i in members])
+        similar = await _attach_rep_images(_rank_against_means(cmean, means, max_results=4))
         out.append({
             "pass_ids": members,
             "size": len(members),
             "passes": passes,
             "top_speed": max((p.get("sw_speed_mph") or 0) for p in passes),
             "rep_crop": rep,
+            "similar": similar,
         })
     return out
-
-
-# Floor for *showing* a visual candidate on the vehicle page. Lower than REID_SIM_THRESHOLD
-# (the "likely same car" bar) so the closest look-alikes are always offered for review; the
-# template flags which clear the threshold as strong matches.
-_VISUAL_FLOOR = 0.4
 
 
 async def visual_similar_vehicles(target_plate: str, max_results: int = 6,
@@ -319,19 +357,24 @@ async def visual_similar_vehicles(target_plate: str, max_results: int = 6,
     first, as (plate, cosine_sim) — the caller flags which clear REID_SIM_THRESHOLD."""
     if not embed_mod.available():
         return []
-    rows = await db.embedded_vehicle_passes()
-    from collections import defaultdict
-    vecs: dict[str, list] = defaultdict(list)
-    for r in rows:
-        if r.get("plate") and r.get("embedding") is not None:
-            vecs[r["plate"]].append(embed_mod.from_blob(r["embedding"]))
-    means = {pl: embed_mod.mean_vector(vs) for pl, vs in vecs.items()}
-    target = means.get(target_plate)
-    if target is None:
-        return []
+    means = await _vehicle_means()
     floor = _VISUAL_FLOOR if min_sim is None else min_sim
-    sims = [(pl, embed_mod.cosine(target, m)) for pl, m in means.items()
-            if pl != target_plate and m is not None]
-    sims = [(pl, round(s, 3)) for pl, s in sims if s >= floor]
-    sims.sort(key=lambda x: -x[1])
-    return sims[:max_results]
+    return _rank_against_means(means.get(target_plate), means, exclude=target_plate,
+                               max_results=max_results, floor=floor)
+
+
+async def similar_vehicles_for_pass(pass_id: int, max_results: int = 6) -> list[dict]:
+    """Existing vehicles whose appearance best matches this single pass's car-crop embedding.
+    Returns [{plate, sim, rep_image, strong}] (closest first), or [] if the pass has no
+    embedding or the Re-ID model is absent. Excludes the pass's own current vehicle."""
+    if not embed_mod.available():
+        return []
+    p = await db.get_pass(pass_id)
+    if not p or p.get("embedding") is None:
+        return []
+    vec = embed_mod.from_blob(p["embedding"])
+    raw = p.get("assigned_plate") or p.get("plate")
+    eff = await db.canonical_plate(raw) if raw else None
+    means = await _vehicle_means()
+    ranked = _rank_against_means(vec, means, exclude=eff, max_results=max_results)
+    return await _attach_rep_images(ranked)

@@ -34,7 +34,8 @@
 </datalist>
 
 {% for c in clusters %}
-<div class="card mb-3" id="cluster-{{ loop.index }}">
+{% set cidx = loop.index %}
+<div class="card mb-3" id="cluster-{{ cidx }}">
   <div class="card-header small d-flex align-items-center gap-3 flex-wrap">
     <span class="fw-bold">Group {{ loop.index }}</span>
     <span class="text-muted">{{ c.size }} pass(es) · top {{ fmt_mph(c.top_speed) }} mph</span>
@@ -52,8 +53,8 @@
       {% for p in c.passes %}
       <label class="text-center" style="cursor:pointer" title="{{ fmt_mph(p.sw_speed_mph) }} mph · {{ fmt_ts(p.start_ts) }}">
         <div><input type="checkbox" class="cl-cb" value="{{ p.id }}" checked></div>
-        {% if p.car_crop_path %}<img src="/{{ p.car_crop_path }}" style="height:90px;border-radius:4px" loading="lazy">
-        {% elif p.entry_frame_path %}<img src="/{{ p.entry_frame_path }}" style="height:90px;border-radius:4px" loading="lazy">
+        {% if p.car_crop_path %}<img src="/{{ p.car_crop_path }}" class="crop-top" style="height:90px;border-radius:4px" loading="lazy">
+        {% elif p.entry_frame_path %}<img src="/{{ p.entry_frame_path }}" class="crop-top" style="height:90px;border-radius:4px" loading="lazy">
         {% else %}<span class="text-muted small">no image</span>{% endif %}
         <div class="small"><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted">mph</span></div>
         <div class="text-muted" style="font-size:.65rem">
@@ -61,6 +62,27 @@
       </label>
       {% endfor %}
     </div>
+
+    {% if c.similar %}
+    <div class="mt-3 pt-2 border-top" style="border-color:#2a2a3a !important">
+      <div class="small mb-1" style="color:#cfe8ff">Looks like an existing vehicle?
+        <span class="badge bg-info text-dark">Re-ID</span>
+        <span class="text-muted">— click to target the merge at that plate</span></div>
+      <div class="d-flex flex-wrap gap-3">
+        {% for s in c.similar %}
+        <div class="cand-thumb text-center" title="cosine similarity {{ s.sim }}">
+          <a href="/vehicle/{{ s.plate }}">
+            {% if s.rep_image %}<img src="/{{ s.rep_image }}" loading="lazy">
+            {% else %}<span class="text-muted small d-block">no image</span>{% endif %}</a>
+          <div class="mt-1"><button type="button" class="btn btn-sm btn-outline-info py-0"
+                 onclick="pickClusterPlate({{ cidx }}, '{{ s.plate }}')">
+            <span class="badge bg-dark border {{ 'border-success' if s.strong else 'border-info' }} font-monospace">{{ s.plate }}</span></button></div>
+          <div class="text-muted" style="font-size:.65rem">sim {{ s.sim }}{% if s.strong %} <span class="badge bg-success">strong</span>{% endif %}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% endfor %}
@@ -71,6 +93,12 @@
 {% endif %}
 
 <script>
+function pickClusterPlate(idx, plate) {
+  const card = document.getElementById('cluster-' + idx);
+  if (!card) return;
+  const inp = card.querySelector('.cl-plate');
+  if (inp) { inp.value = plate; inp.focus(); }
+}
 async function assignCluster(btn, idx) {
   const card = document.getElementById('cluster-' + idx);
   const plate = card.querySelector('.cl-plate').value.trim().toUpperCase();

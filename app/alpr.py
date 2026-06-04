@@ -16,6 +16,7 @@ import threading
 import numpy as np
 
 from . import config
+from . import anpr_mask
 
 log = logging.getLogger(__name__)
 
@@ -68,11 +69,28 @@ def _normalise(text: str) -> str:
     return _PLATE_RE.sub("", (text or "").upper())
 
 
+def _plate_centre_frame(r, off_x: int, off_y: int) -> tuple[float, float] | None:
+    """Centre of a detected plate's bbox in *frame* pixels (crop bbox + crop offset).
+    None if the detector result carries no bounding box."""
+    bb = getattr(getattr(r, "detection", None), "bounding_box", None)
+    if bb is None:
+        return None
+    try:
+        return ((bb.x1 + bb.x2) / 2.0 + off_x, (bb.y1 + bb.y2) / 2.0 + off_y)
+    except Exception:
+        return None
+
+
 def read_plate(frame_bgr: np.ndarray,
-               bbox_xyxy: tuple[float, float, float, float]) -> tuple[str, float] | None:
+               bbox_xyxy: tuple[float, float, float, float],
+               camera: str | None = None) -> tuple[str, float] | None:
     """
     Detect + OCR the number plate inside the car bounding box.
     Returns (plate_text, mean_confidence) for the best plate above ALPR_MIN_CONF, or None.
+
+    Plates whose detection centre falls inside a configured ANPR ignore zone (see
+    `anpr_mask`) are discarded — this masks a fixed background/parked plate that sits inside
+    the moving car's crop, regardless of what it OCRs to.
     """
     if not config.ENABLE_ALPR or frame_bgr is None or bbox_xyxy is None:
         return None
@@ -80,6 +98,7 @@ def read_plate(frame_bgr: np.ndarray,
     if alpr is None:
         return None
 
+    cam = camera or config.CAMERA_NAME
     h, w = frame_bgr.shape[:2]
     pad = config.ALPR_CROP_PAD
     x1, y1, x2, y2 = bbox_xyxy
@@ -102,6 +121,11 @@ def read_plate(frame_bgr: np.ndarray,
         text = _normalise(r.ocr.text)
         conf = _mean_conf(r.ocr.confidence)
         if len(text) < 4 or conf < config.ALPR_MIN_CONF:
+            continue
+        # Spatial ignore zone: drop plates detected at a masked frame location.
+        centre = _plate_centre_frame(r, cx1, cy1)
+        if centre is not None and w and h and anpr_mask.is_ignored(cam, centre[0] / w, centre[1] / h):
+            log.info("ignored plate %s at masked region (%.0f,%.0f)", text, centre[0], centre[1])
             continue
         if best is None or conf > best[1]:
             best = (text, round(conf, 3))
