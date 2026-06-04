@@ -19,6 +19,11 @@ Replaced a Frigate deployment — it keeps only clean 30 fps clips and drops emp
                         └─ fast-alpr ──► number-plate text
                                           │
                               SQLite events + web UI (:8765)
+                                          │
+                              per-plate vehicle registry
+                                          │
+                    (optional) vision model via Ollama
+                                          └─► colour / make / model description
 ```
 
 - **Decode:** `ffmpeg -hwaccel d3d11va` (4K HEVC, ~40% less CPU than software decode).
@@ -27,6 +32,10 @@ Replaced a Frigate deployment — it keeps only clean 30 fps clips and drops emp
 - **Tracking:** ByteTrack (via `supervision`).
 - **Speed:** per-track displacement mapped through a calibrated homography.
 - **ANPR:** `fast-alpr` (fast-plate-ocr + open-image-models), reuses the same onnxruntime.
+- **Vehicle enrichment:** passes are grouped by plate into a vehicle registry; a local
+  multimodal model (via Ollama) describes each frequent car's colour/make/model. This step
+  is **optional** — the pipeline runs fine without it, just with no descriptions. See
+  [Vehicle descriptions & grouping](#vehicle-descriptions--grouping).
 
 ## Prerequisites
 
@@ -36,6 +45,11 @@ Replaced a Frigate deployment — it keeps only clean 30 fps clips and drops emp
 - [NSSM](https://nssm.cc/) on `PATH` (or copied to `C:\Windows\System32\nssm.exe`) for
   service install.
 - A camera RTSPS stream (developed against a UniFi UDM Protect stream).
+- **(Optional) An OpenAI-style model host for vehicle descriptions** — by default
+  [Ollama](https://ollama.com/) running locally with a multimodal model pulled
+  (`ollama pull llama3.2-vision:11b`). Only needed if you want auto-generated
+  colour/make/model descriptions; set `VEHICLE_AUTODESCRIBE=0` to disable entirely.
+  Any host exposing Ollama's `/api/generate` works — point `OLLAMA_URL` at it.
 
 ## Setup
 
@@ -75,6 +89,19 @@ The model weights, `.venv`, and `ffmpeg.exe`/`ffprobe.exe` are **not** in the re
 | `MIN_DT_SECONDS` | Minimum track interval used in speed estimation |
 | `DATA_DIR` | Where clips, logs, and the SQLite DB are written |
 | `PORT` | Web UI / API port (default `8765`) |
+| `HOST` | Bind address — `127.0.0.1` (localhost) or `0.0.0.0` (LAN, needs firewall rule) |
+| `ENABLE_ALPR` | Toggle number-plate recognition (default on) |
+| `ALPR_DETECTOR_MODEL` / `ALPR_OCR_MODEL` | fast-alpr model names (auto-downloaded) |
+| `ALPR_MIN_CONF` | Minimum mean OCR confidence to accept a plate read |
+| `OLLAMA_URL` | Model host for vehicle descriptions (default `http://localhost:11434`) |
+| `VEHICLE_VISION_MODEL` | Multimodal model name (default `llama3.2-vision:11b`) |
+| `VEHICLE_AUTODESCRIBE` | Auto-describe frequent vehicles (`1`/`0`, default on) |
+| `VEHICLE_MIN_PASSES` | Describe a plate once it has been seen more than this many times |
+| `VEHICLE_VISION_TIMEOUT` | Seconds to wait on the vision model per call |
+| `VEHICLE_VISION_PROMPT` | Prompt sent to the vision model (default returns `Colour Make Model`) |
+
+Additional tuning knobs (frame rates, motion gate, pipeline resolution, plate-merge
+sensitivity) have sensible defaults in `app/config.py` and can be overridden in `.env`.
 
 ## Lifecycle (NSSM)
 
@@ -137,3 +164,47 @@ calibration after (re)running lens calibration, and whenever the camera is moved
 > **Timing note:** frame timestamps come from a monotonic frame index (ffmpeg emits CFR at
 > `DETECT_FPS`), not wall-clock-at-read. Read-time clock jitter used to corrupt `dt` in
 > `speed = displacement / dt`, which scaled with speed and threw off faster vehicles.
+
+## Vehicle descriptions & grouping
+
+Passes that carry a recognised plate are grouped into a **per-plate vehicle registry**
+(the *Vehicles* page), which tracks each car's pass count, top/average speed, and a
+representative crop. Two enrichment features sit on top of it:
+
+### AI descriptions (requires a model host)
+
+For any plate seen more than `VEHICLE_MIN_PASSES` times, the best car crop is sent to a
+**local multimodal model via Ollama** (`OLLAMA_URL` → `/api/generate`) to generate a short
+`Colour Make Model` description (e.g. `Silver Volkswagen Golf`). It can also be triggered
+on demand with the **Regenerate** button on a vehicle's page.
+
+- **This is the only part of the system that needs a model host.** Detection, tracking,
+  speed and ANPR do **not** use Ollama — they run on onnxruntime/DirectML.
+- **Local by design:** crops are sent only to the configured `OLLAMA_URL`; neighbours'
+  vehicle imagery never leaves the box. The call runs in a thread executor so it never
+  blocks ingest.
+- **Fully optional:** with `VEHICLE_AUTODESCRIBE=0` (or no model host reachable) the
+  pipeline runs unchanged — vehicles simply have no description. Failures are logged and
+  swallowed, not fatal.
+- Setup: `ollama pull llama3.2-vision:11b` (or set `VEHICLE_VISION_MODEL` to another
+  multimodal model you've pulled). Tune the wording with `VEHICLE_VISION_PROMPT`.
+
+### Plate grouping (OCR-variant merging)
+
+ANPR misreads produce slightly different plate strings for the same car. A vehicle's page
+suggests **possible same-car plates** using OCR-aware edit distance, and — when descriptions
+exist — corroborates them with **appearance**: a candidate whose colour/make/model matches
+is ranked higher and allowed at a looser plate distance (a far-off plate is never suggested
+on looks alone). Tick the matches and **Merge** to group them under one canonical plate;
+merges are reversible (the raw `pass.plate` is never rewritten).
+
+## Confirmed-speeder evidence
+
+Flag an individual pass (from its session) or a whole vehicle (from its page) as a
+**confirmed speeder**. The **Evidence** page lists every flagged pass and exports either:
+
+- a **ZIP bundle** — one folder per pass (video clip + entry/exit stills) plus a
+  `manifest.csv` of date/time, plate and measured speed, ready to send to the council, or
+- a **CSV** of the same manifest on its own.
+
+A pass counts as evidence if it was flagged directly *or* its vehicle is flagged.
