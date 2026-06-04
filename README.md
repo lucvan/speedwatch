@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="speedwatch" width="440">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/platform-Windows-0078D6.svg" alt="Platform: Windows">
+  <img src="https://img.shields.io/badge/GPU-AMD%20DirectML-ED1C24.svg" alt="GPU: AMD DirectML">
+  <img src="https://img.shields.io/badge/API-FastAPI-009688.svg" alt="FastAPI">
+  <img src="https://img.shields.io/badge/detector-YOLO11-7B3FE4.svg" alt="YOLO11">
+</p>
+
 # speedwatch
 
 Standalone vehicle speed-detection and ANPR service for a single fixed camera. Pulls a
@@ -245,3 +258,11 @@ Flag an individual pass (from its session) or a whole vehicle (from its page) as
 - a **CSV** of the same manifest on its own.
 
 A pass counts as evidence if it was flagged directly *or* its vehicle is flagged.
+
+## License
+
+[**AGPL-3.0**](LICENSE). This is inherited from **Ultralytics YOLO11** (the object
+detector), which is AGPL-3.0 — a project that uses it for open source must be AGPL-3.0 too,
+or hold an Ultralytics commercial licence. The other dependencies are permissive: `supervision`,
+`fast-alpr` / `fast-plate-ocr` / `open-image-models`, FastAPI, onnxruntime, and the
+`vehicle-reid-0001` Re-ID model (MIT) are all MIT/Apache/BSD.
