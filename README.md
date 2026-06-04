@@ -9,32 +9,43 @@ Replaced a Frigate deployment — it keeps only clean 30 fps clips and drops emp
 
 ## Pipeline
 
-```
-4K RTSPS  ──(ffmpeg -hwaccel d3d11va)──►  GPU decode
-   │
-   ├─ 30 fps capture ───────────────────►  clip writer (clean 30 fps mp4)
-   └─ 15 fps  ──►  YOLO11 (onnxruntime-directml) ─► ByteTrack
-                        │
-                        ├─ homography ─► real-world speed (mph)
-                        └─ fast-alpr ──► number-plate text
-                                          │
-                              SQLite events + web UI (:8765)
-                                          │
-                              per-plate vehicle registry
-                                          │
-                    (optional) vision model via Ollama
-                                          └─► colour / make / model description
+```mermaid
+flowchart TD
+    cam["📹 4K RTSPS camera"] -->|"ffmpeg -hwaccel d3d11va"| dec["GPU decode → frames"]
+    dec --> gate{"motion gate (MOG2)"}
+    gate -->|motion| buf["pass-session frame buffer"]
+    buf --> clip["clip writer (clean 30 fps mp4)"]
+    buf -->|"~15 fps"| yolo["YOLO11 (onnxruntime-directml)"]
+    yolo --> bt["ByteTrack"]
+    bt --> spd["lens undistort + homography → speed (mph)"]
+    bt --> crop["car crop"]
+    crop --> alpr["fast-alpr → number plate"]
+    crop --> reid["Vehicle Re-ID (onnxruntime) → 512-d embedding"]
+    crop -. optional .-> vis["vision model via Ollama → colour/make/model"]
+
+    spd --> db[("SQLite events")]
+    alpr --> db
+    reid --> db
+    vis --> db
+    db --> ui["web UI / API :8765"]
+
+    db --> reg["per-plate vehicle registry"]
+    reg --> grp["plate grouping & merges (OCR + appearance)"]
+    reid --> uid["Unidentified queue: cluster plateless cars"]
+    reg --> ev["confirmed-speeder evidence export (zip/csv)"]
 ```
 
 - **Decode:** `ffmpeg -hwaccel d3d11va` (4K HEVC, ~40% less CPU than software decode).
 - **Detection:** YOLO11 medium ONNX on `DmlExecutionProvider` (DirectML) — ~7 ms/frame
   on the AMD RX 9070 XT vs ~136 ms on CPU (~19× faster).
 - **Tracking:** ByteTrack (via `supervision`).
-- **Speed:** per-track displacement mapped through a calibrated homography.
+- **Speed:** per-track displacement, lens-undistorted then mapped through a calibrated homography.
 - **ANPR:** `fast-alpr` (fast-plate-ocr + open-image-models), reuses the same onnxruntime.
-- **Vehicle enrichment:** passes are grouped by plate into a vehicle registry; a local
-  multimodal model (via Ollama) describes each frequent car's colour/make/model. This step
-  is **optional** — the pipeline runs fine without it, just with no descriptions. See
+- **Vehicle enrichment (optional):** passes are grouped by plate into a vehicle registry.
+  A small **Vehicle Re-ID** model embeds each car crop for visual grouping of plateless /
+  look-alike cars (the *Unidentified* queue), and a local **multimodal model via Ollama**
+  describes each frequent car's colour/make/model. Both run on the existing onnxruntime /
+  Ollama and the pipeline runs fine without them. See
   [Vehicle descriptions & grouping](#vehicle-descriptions--grouping).
 
 ## Prerequisites
