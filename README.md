@@ -259,6 +259,25 @@ Flag an individual pass (from its session) or a whole vehicle (from its page) as
 
 A pass counts as evidence if it was flagged directly *or* its vehicle is flagged.
 
+## Acknowledgements
+
+Built on these open-source projects and models:
+
+- [Ultralytics YOLO11](https://github.com/ultralytics/ultralytics) — object detection (AGPL-3.0).
+- [Roboflow `supervision`](https://github.com/roboflow/supervision) — ByteTrack tracking, and
+  the perspective-transform vehicle-speed approach that this project's homography follows.
+- [`fast-alpr`](https://github.com/ankandrew/fast-alpr) +
+  [`fast-plate-ocr`](https://github.com/ankandrew/fast-plate-ocr) +
+  [`open-image-models`](https://github.com/ankandrew/open-image-models) — number-plate detection & OCR.
+- [`vehicle-reid-0001`](https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/vehicle-reid-0001)
+  from the OpenVINO Open Model Zoo — an [OSNet](https://github.com/KaiyangZhou/deep-person-reid)
+  (`deep-person-reid`, MIT) model used for visual vehicle grouping.
+- [Ollama](https://github.com/ollama/ollama) + a local multimodal model (e.g. Llama 3.2 Vision)
+  — vehicle descriptions.
+- [FastAPI](https://github.com/fastapi/fastapi), [onnxruntime](https://github.com/microsoft/onnxruntime),
+  and [ffmpeg](https://ffmpeg.org/).
+- Inspired by [Frigate](https://github.com/blakeblackshear/frigate), the NVR this setup replaced.
+
 ## License
 
 [**AGPL-3.0**](LICENSE). This is inherited from **Ultralytics YOLO11** (the object
