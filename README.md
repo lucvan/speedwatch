@@ -114,8 +114,11 @@ out at a glance.
 - **Vehicles** — per-plate registry with top/average speed and description; sort, or filter to
   confirmed speeders.
 - **Vehicle page** — stats, representative image, AI description, plate grouping
-  (similar-plate + visually-similar merge candidates), and the vehicle's pass history.
-- **Unidentified** — plateless passes clustered by appearance for promotion/merge.
+  (similar-plate + visually-similar merge candidates), and the vehicle's pass history. You can
+  **pin the thumbnail** to any pass's image, and **recompute the plate** by combining ANPR
+  reads across every pass (see [Vehicle descriptions & grouping](#vehicle-descriptions--grouping)).
+- **Unidentified** — plateless passes clustered by appearance, for promotion, merge, or
+  grouping into a **no-plate vehicle record**.
 - **Review** — low-confidence unlabelled passes for quick triage.
 - **Evidence** — confirmed-speeder passes with ZIP/CSV export.
 - **Calibrate** — lens + zone calibration (see [Calibration](#calibration)).
@@ -265,6 +268,18 @@ You can also **manually assign** any pass to a vehicle (handy when the plate was
 you recognise the car) from the pass's session page — it attaches via a reversible
 `assigned_plate` override and the pass then counts toward that vehicle everywhere.
 
+**Recompute a plate from every image.** When a car keeps reading at low confidence, the
+vehicle page's **Recompute plate from all images** button re-runs ANPR over every saved still
+and car crop of every pass, then combines the reads two ways — confidence-weighted
+whole-string scoring **and** per-position character voting — and suggests a single best plate.
+Nothing changes until you confirm: applying it routes through the same reversible merge, so all
+the vehicle's passes regroup under the corrected plate.
+
+**Pin the representative thumbnail.** By default a vehicle's thumbnail is the crop from its
+highest-confidence plate read, which can show the wrong car after you clean up a mis-grouped
+pass. Use **Set as thumbnail** on any pass row to pin that pass's image instead; the pin
+(`vehicle.rep_pinned`) locks it so the automatic updater never overrides your choice.
+
 ### Visual grouping & Unidentified vehicles (Vehicle Re-ID)
 
 Each car crop is embedded with a small **Vehicle Re-ID model** (OpenVINO OMZ
@@ -279,9 +294,11 @@ plate:
   read but you recognise the car).
 - **Unidentified page:** passes with **no plate** are clustered by visual similarity so even
   plateless cars get grouped. Each cluster also suggests the closest **existing** vehicles, so
-  you can merge it into a known vehicle — or promote it to a new one (give it a label and it
-  appears in the Vehicles list). Older passes are embedded on demand with the **Embed older
-  passes** button.
+  you can merge it into a known vehicle, promote it to a new one (give it a label and it appears
+  in the Vehicles list), or **Group (no plate)** to create a record for a car whose plate was
+  never read — it gets a synthetic `UNK-NNNN` id and behaves like any other vehicle, renamable
+  later via the recompute/merge tools once a plate turns up. Older passes are embedded on demand
+  with the **Embed older passes** button.
 
 Visual similarity finds **look-alikes**, not proven identity (two identical cars embed close),
 so it is always a suggestion you confirm. Tune `REID_SIM_THRESHOLD` on real footage: lower it
