@@ -907,6 +907,17 @@ async def dashboard_stats(since_ts: float, warn_mph: float, limit_mph: float) ->
     }
 
 
+async def all_pass_speeds() -> list[float]:
+    """Every pass's measured speed (mph), for the road-wide speed distribution / percentiles.
+    Prefers the reviewer-corrected speed when present."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute(
+            "SELECT COALESCE(user_corrected_mph, sw_speed_mph) FROM pass "
+            "WHERE sw_speed_mph IS NOT NULL"
+        )
+        return [r[0] for r in await cur.fetchall() if r[0] is not None]
+
+
 async def recent_fast_passes(limit: int = 8) -> list[dict]:
     """Most recent passes (newest first) with thumbnail + plate, for the dashboard strip."""
     sql = f"""

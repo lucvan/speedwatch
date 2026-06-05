@@ -55,6 +55,30 @@
   </div>
 </div>
 
+<!-- ── Road speed distribution ── -->
+{% if dist_svg %}
+<div class="card mb-4">
+  <div class="card-header small d-flex align-items-center">
+    <span>Speed distribution <span class="text-muted">— all {{ speed_summary.n }} passes on the road</span></span>
+    {% if speed_summary %}
+    <span class="ms-auto small text-muted">
+      median <strong class="spd spd-{{ speed_band(speed_summary.median) }}">{{ speed_summary.median }}</strong> ·
+      85th&nbsp;%ile <strong class="spd spd-{{ speed_band(speed_summary.p85) }}">{{ speed_summary.p85 }}</strong> ·
+      {{ speed_summary.over_pct }}% over limit
+    </span>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    {{ dist_svg|safe }}
+    <div class="small text-muted mt-1">
+      Bars are coloured by speed band; the line is a smoothed curve. Dashed lines mark the
+      amber/limit thresholds and the <span style="color:#4fc3f7">85th-percentile</span> speed
+      (the speed 85% of traffic stays at or below — the standard road-speed benchmark).
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3">
   <!-- ── Needs attention ── -->
   <div class="col-12 col-xl-5">

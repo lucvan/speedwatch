@@ -158,11 +158,34 @@
   </div>
 </div>
 
+<!-- ── Speed vs the road ── -->
+{% if dist_svg and veh_summary %}
+<div class="card mb-4">
+  <div class="card-header small d-flex align-items-center">
+    <span>Speed vs the whole road</span>
+    {% if median_rank is not none %}
+    <span class="ms-auto small text-muted">
+      median <strong class="spd spd-{{ speed_band(veh_summary.median) }}">{{ veh_summary.median }}</strong> mph —
+      faster than <strong>{{ median_rank|round(0)|int }}%</strong> of all passes
+    </span>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    {{ dist_svg|safe }}
+    <div class="small text-muted mt-1">
+      Background bars/curve are <em>all</em> passes on the road; the
+      <span style="color:#4fc3f7">blue ticks</span> are this vehicle's passes, with the solid
+      blue line at its median. This vehicle's 85th&nbsp;%ile is {{ veh_summary.p85 }} mph; top {{ veh_summary.max }} mph.
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <h6 class="mb-2">Passes ({{ passes|length }})</h6>
 <div class="table-responsive">
 <table class="table table-hover table-sm align-middle">
   <thead class="table-dark">
-    <tr><th style="width:1%">Thumb</th><th>When</th><th class="text-end">Speed</th><th class="text-end">Plate conf</th><th>Conf</th><th>Label</th><th>Thumbnail</th><th></th></tr>
+    <tr><th style="width:1%">Thumb</th><th>When</th><th class="text-end">Speed</th><th class="text-end">vs road</th><th class="text-end">Plate conf</th><th>Conf</th><th>Label</th><th>Thumbnail</th><th></th></tr>
   </thead>
   <tbody>
   {% for p in passes %}
@@ -175,6 +198,8 @@
     </td>
     <td class="small text-nowrap" title="{{ fmt_ts(p.start_ts) }}">{{ fmt_ago(p.start_ts) }}</td>
     <td class="text-end"><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted small">mph</span></td>
+    <td class="text-end small text-muted" title="Faster than this share of all road passes">
+      {% set pr = pass_ranks.get(p.id) %}{% if pr is not none %}{{ pr|round(0)|int }}%{% else %}—{% endif %}</td>
     <td class="text-end small text-muted">{{ "%.0f"|format((p.plate_confidence or 0) * 100) }}%</td>
     <td><span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span></td>
     <td>{% if p.user_label %}<span class="badge badge-label-{{ p.user_label }}">{{ p.user_label|replace('_',' ') }}</span>{% else %}<span class="text-muted small">—</span>{% endif %}</td>
@@ -269,10 +294,16 @@ async function recomputePlate(btn) {
                     + (d.num_passes || 0) + ' passes scanned).</span>';
       btn.disabled = false; return;
     }
-    const rows = (d.candidates || []).map(c =>
-      '<tr><td class="font-monospace">' + esc(c.plate) + '</td><td class="text-end">' + c.count
-      + '</td><td class="text-end">' + c.total_conf + '</td><td class="text-end">' + c.max_conf
-      + '</td></tr>').join('');
+    window._recompCands = d.candidates || [];
+    const rows = (d.candidates || []).map((c, i) => {
+      const ignore = c.sample_box
+        ? '<button class="btn btn-sm btn-outline-warning py-0" onclick="ignoreCandidate(' + i + ')"'
+          + ' title="Mask this plate\'s location (e.g. a parked car) so it stops being read">🚫 Ignore location</button>'
+        : '<span class="text-muted small">—</span>';
+      return '<tr><td class="font-monospace">' + esc(c.plate) + '</td><td class="text-end">' + c.count
+        + '</td><td class="text-end">' + c.total_conf + '</td><td class="text-end">' + c.max_conf
+        + '</td><td>' + ignore + '</td></tr>';
+    }).join('');
     let html = '<div class="mb-2">Suggested plate from <strong>' + d.num_reads
       + '</strong> reads across <strong>' + d.num_passes + '</strong> passes: '
       + '<span class="badge plate-badge fs-6">' + esc(d.suggested) + '</span>';
@@ -285,10 +316,48 @@ async function recomputePlate(btn) {
       html += ' <span class="text-success ms-2">— matches the current plate</span>';
     html += '</div><table class="table table-sm table-dark"><thead><tr><th>Read</th>'
       + '<th class="text-end">Votes</th><th class="text-end">Σ conf</th>'
-      + '<th class="text-end">Max</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      + '<th class="text-end">Max</th><th>Parked car?</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      + '<div id="ignore-preview"></div>';
     box.innerHTML = html;
     btn.disabled = false;
   } catch (e) { st.textContent = 'failed: ' + e; btn.disabled = false; }
+}
+// Expand a tight plate box into a slightly larger ignore rectangle (covers position jitter),
+// clamped to the frame.
+function _padBox(b, fx, fy) {
+  const w = b[2] - b[0], h = b[3] - b[1];
+  return [Math.max(0, b[0] - w * fx), Math.max(0, b[1] - h * fy),
+          Math.min(1, b[2] + w * fx), Math.min(1, b[3] + h * fy)];
+}
+function ignoreCandidate(i) {
+  const c = (window._recompCands || [])[i];
+  const prev = document.getElementById('ignore-preview');
+  if (!c || !c.sample_box || !prev) return;
+  const rect = _padBox(c.sample_box, 0.35, 0.6).map(v => +v.toFixed(5));
+  const [x1, y1, x2, y2] = rect;
+  const style = 'left:' + (x1 * 100) + '%;top:' + (y1 * 100) + '%;width:' + ((x2 - x1) * 100)
+              + '%;height:' + ((y2 - y1) * 100) + '%';
+  prev.innerHTML =
+    '<div class="alert alert-warning py-2"><div class="mb-2">Mask the boxed location for '
+    + '<span class="font-monospace">' + esc(c.plate) + '</span>? Any plate detected there will be '
+    + 'ignored on future passes (a car that genuinely drives through still reads elsewhere).</div>'
+    + '<div style="position:relative;display:inline-block;max-width:100%">'
+    + (c.sample_image ? '<img src="/' + c.sample_image + '" style="max-width:100%;border-radius:4px;display:block">' : '')
+    + '<div style="position:absolute;border:2px solid #e6b84f;background:rgba(230,184,79,.25);' + style + '"></div>'
+    + '</div><div class="mt-2"><button class="btn btn-sm btn-warning" onclick=\'saveIgnoreBox('
+    + JSON.stringify(rect) + ')\'>Save ignore box</button> '
+    + '<button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById(\'ignore-preview\').innerHTML=\'\'">Cancel</button></div></div>';
+}
+async function saveIgnoreBox(rect) {
+  const prev = document.getElementById('ignore-preview');
+  const r = await fetch('/api/anpr-mask/add', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({rect})});
+  const d = await r.json();
+  if (r.ok && d.ok)
+    prev.innerHTML = '<div class="alert alert-success py-2">Ignore box saved ('
+      + d.count + ' total). It applies to new passes immediately; re-run recompute to drop it here.</div>';
+  else
+    prev.innerHTML = '<div class="alert alert-danger py-2">Failed: ' + (d.detail || r.status) + '</div>';
 }
 function applyRecomputed(plate) {
   if (!confirm('Set this vehicle\'s plate to ' + plate + '?\nAll its passes will be grouped under it.')) return;

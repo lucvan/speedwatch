@@ -246,27 +246,24 @@ async def backfill_car_images(limit: int | None = None) -> dict:
 # summed confidence and also build a per-position character-vote consensus, then suggest
 # the better-supported of the two for the user to confirm.
 
-def _collect_reads_sync(pass_row: dict) -> list[tuple[str, float]]:
-    """Run ANPR over every stored image of one pass and return all plate reads."""
+def _collect_reads_sync(pass_row: dict) -> list[dict]:
+    """Run ANPR over a pass's full-frame stills and return all located plate reads
+    ({text, conf, img_rel, box}). Reads come only from full frames (not the saved car crop)
+    so each plate's location maps to the frame — letting ANPR ignore boxes apply correctly,
+    and letting the caller offer to mask a fixed parked plate."""
     import cv2
     from . import detect as detect_mod, alpr as alpr_mod
-    reads: list[tuple[str, float]] = []
+    reads: list[dict] = []
 
-    # The car crop is already a tight car image — OCR it whole.
-    crop_rel = pass_row.get("car_crop_path")
-    if crop_rel:
-        p = Path(config.DATA_DIR) / crop_rel
-        if p.exists():
-            img = cv2.imread(str(p))
-            if img is not None:
-                h, w = img.shape[:2]
-                reads += alpr_mod.read_plates(img, (0, 0, w, h))
-
-    # The raw full-frame stills — detect cars first, then OCR each box.
-    for key in ("entry_frame_raw_path", "exit_frame_raw_path", "entry_frame_path", "exit_frame_path"):
-        rel = pass_row.get(key)
-        if not rel:
+    # One image per direction: prefer the raw still, fall back to the annotated one. (Reading
+    # both raw + annotated of the same moment would just double-count identical reads.)
+    entry = pass_row.get("entry_frame_raw_path") or pass_row.get("entry_frame_path")
+    exit_ = pass_row.get("exit_frame_raw_path")  or pass_row.get("exit_frame_path")
+    seen: set[str] = set()
+    for rel in (entry, exit_):
+        if not rel or rel in seen:
             continue
+        seen.add(rel)
         p = Path(config.DATA_DIR) / rel
         if not p.exists():
             continue
@@ -274,34 +271,48 @@ def _collect_reads_sync(pass_row: dict) -> list[tuple[str, float]]:
         if img is None:
             continue
         for d in detect_mod.run(img):
-            reads += alpr_mod.read_plates(img, d.bbox_xyxy)
+            for r in alpr_mod.read_plates_located(img, d.bbox_xyxy):
+                reads.append({"text": r["text"], "conf": r["conf"],
+                              "img_rel": rel, "box": r.get("box")})
     return reads
 
 
-def _aggregate_plate_reads(reads: list[tuple[str, float]]) -> dict | None:
-    """Combine many (plate, confidence) reads into a single suggestion.
-    Returns {suggested, consensus, candidates[], num_reads} or None if there are no reads."""
+def _aggregate_plate_reads(reads: list[dict]) -> dict | None:
+    """Combine many located reads ({text, conf, img_rel, box}) into a single suggestion.
+    Returns {suggested, consensus, candidates[], num_reads} or None if there are no reads.
+    Each candidate carries a representative sample_image + sample_box (its highest-confidence
+    located read) so the UI can offer an ANPR ignore box for that plate's location."""
     if not reads:
         return None
     from collections import defaultdict
     score: dict[str, float] = defaultdict(float)
     count: dict[str, int]   = defaultdict(int)
     maxc:  dict[str, float] = defaultdict(float)
-    for text, conf in reads:
+    rep:   dict[str, tuple] = {}   # plate -> (conf, img_rel, box) of its best located read
+    for r in reads:
+        text, conf = r["text"], r["conf"]
         score[text] += conf
         count[text] += 1
         maxc[text]   = max(maxc[text], conf)
-    candidates = [{"plate": t, "count": count[t],
-                   "total_conf": round(score[t], 3), "max_conf": round(maxc[t], 3)}
-                  for t in score]
+        if r.get("box") and (text not in rep or conf > rep[text][0]):
+            rep[text] = (conf, r.get("img_rel"), r["box"])
+
+    candidates = []
+    for t in score:
+        item = {"plate": t, "count": count[t],
+                "total_conf": round(score[t], 3), "max_conf": round(maxc[t], 3)}
+        if t in rep:
+            item["sample_image"] = rep[t][1]
+            item["sample_box"]   = rep[t][2]
+        candidates.append(item)
     candidates.sort(key=lambda c: (-c["total_conf"], -c["max_conf"]))
 
     # Per-position character vote among reads of the dominant (most-confidently-seen) length.
     len_score: dict[int, float] = defaultdict(float)
-    for text, conf in reads:
-        len_score[len(text)] += conf
+    for r in reads:
+        len_score[len(r["text"])] += r["conf"]
     dom_len = max(len_score, key=lambda L: len_score[L])
-    same_len = [(t, c) for t, c in reads if len(t) == dom_len]
+    same_len = [(r["text"], r["conf"]) for r in reads if len(r["text"]) == dom_len]
     consensus = None
     if same_len:
         cols = [defaultdict(float) for _ in range(dom_len)]

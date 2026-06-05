@@ -106,17 +106,20 @@ up to the limit, red over it (`SPEED_WARN_MPH` / `SPEED_LIMIT_MPH`) — so a fas
 out at a glance.
 
 - **Dashboard** — landing page: headline stats (passes today, fastest today, over-limit
-  count, vehicles tracked, confirmed speeders), a *needs-attention* work queue (plateless
-  passes, visual clusters to merge, low-confidence reviews), a top-vehicle leaderboard, and a
-  recent-passes strip.
+  count, vehicles tracked, confirmed speeders), a **road speed-distribution chart** (histogram +
+  smoothed curve with the median, 85th-percentile and threshold lines), a *needs-attention* work
+  queue (plateless passes, visual clusters to merge, low-confidence reviews), a top-vehicle
+  leaderboard, and a recent-passes strip.
 - **Passes** — every pass, grouped by day with relative timestamps; filter by label, minimum
   speed, or plateless-only; flag a pass as evidence inline.
 - **Vehicles** — per-plate registry with top/average speed and description; sort, or filter to
   confirmed speeders.
 - **Vehicle page** — stats, representative image, AI description, plate grouping
-  (similar-plate + visually-similar merge candidates), and the vehicle's pass history. You can
-  **pin the thumbnail** to any pass's image, and **recompute the plate** by combining ANPR
-  reads across every pass (see [Vehicle descriptions & grouping](#vehicle-descriptions--grouping)).
+  (similar-plate + visually-similar merge candidates), a **speed-vs-the-road chart** (this
+  vehicle's passes overlaid on the whole-road distribution, with its percentile rank), and the
+  vehicle's pass history (each pass tagged with its road percentile). You can **pin the
+  thumbnail** to any pass's image, and **recompute the plate** by combining ANPR reads across
+  every pass (see [Vehicle descriptions & grouping](#vehicle-descriptions--grouping)).
 - **Unidentified** — plateless passes clustered by appearance, for promotion, merge, or
   grouping into a **no-plate vehicle record**.
 - **Review** — low-confidence unlabelled passes for quick triage.
@@ -229,7 +232,9 @@ plate). On `/calibrate`, the **ANPR ignore zones** tool lets you drag a box over
 plate; any plate whose detection centre lands inside a box is discarded — including misreads
 of it, since the filter is positional, not value-based. A car that genuinely drives through is
 unaffected (its plate reads elsewhere in the frame). Zones are stored per camera in
-`<DATA_DIR>/anpr_mask/<camera>.json` and take effect on the next vehicle (no restart).
+`<DATA_DIR>/anpr_mask/<camera>.json` and take effect on the next vehicle (no restart). You can
+also add a zone straight from a vehicle's **plate recompute** results (the *🚫 Ignore location*
+button) without opening `/calibrate`.
 
 ## Vehicle descriptions & grouping
 
@@ -269,11 +274,13 @@ you recognise the car) from the pass's session page — it attaches via a revers
 `assigned_plate` override and the pass then counts toward that vehicle everywhere.
 
 **Recompute a plate from every image.** When a car keeps reading at low confidence, the
-vehicle page's **Recompute plate from all images** button re-runs ANPR over every saved still
-and car crop of every pass, then combines the reads two ways — confidence-weighted
-whole-string scoring **and** per-position character voting — and suggests a single best plate.
-Nothing changes until you confirm: applying it routes through the same reversible merge, so all
-the vehicle's passes regroup under the corrected plate.
+vehicle page's **Recompute plate from all images** button re-runs ANPR over every pass's
+full-frame stills, then combines the reads two ways — confidence-weighted whole-string scoring
+**and** per-position character voting — and suggests a single best plate. Nothing changes until
+you confirm: applying it routes through the same reversible merge, so all the vehicle's passes
+regroup under the corrected plate. The recompute respects your [ANPR ignore zones](#anpr-ignore-zones-optional),
+and any **parked/background plate** that keeps showing up in the results can be masked in one
+click via **🚫 Ignore location** (it draws the ignore box for you over the offending plate).
 
 **Pin the representative thumbnail.** By default a vehicle's thumbnail is the crop from its
 highest-confidence plate read, which can show the wrong car after you clean up a mis-grouped

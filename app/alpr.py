@@ -69,29 +69,39 @@ def _normalise(text: str) -> str:
     return _PLATE_RE.sub("", (text or "").upper())
 
 
-def _plate_centre_frame(r, off_x: int, off_y: int) -> tuple[float, float] | None:
-    """Centre of a detected plate's bbox in *frame* pixels (crop bbox + crop offset).
+def _plate_bbox_frame(r, off_x: int, off_y: int) -> tuple[float, float, float, float] | None:
+    """A detected plate's bbox in *frame* pixels (crop bbox + crop offset).
     None if the detector result carries no bounding box."""
     bb = getattr(getattr(r, "detection", None), "bounding_box", None)
     if bb is None:
         return None
     try:
-        return ((bb.x1 + bb.x2) / 2.0 + off_x, (bb.y1 + bb.y2) / 2.0 + off_y)
+        return (bb.x1 + off_x, bb.y1 + off_y, bb.x2 + off_x, bb.y2 + off_y)
     except Exception:
         return None
 
 
-def read_plates(frame_bgr: np.ndarray,
-                bbox_xyxy: tuple[float, float, float, float],
-                camera: str | None = None) -> list[tuple[str, float]]:
-    """
-    Detect + OCR all number plates inside the car bounding box, returning every read above
-    ALPR_MIN_CONF as (plate_text, mean_confidence). Used both by `read_plate` (which keeps the
-    single best) and by the multi-image plate recompute (which combines many reads).
+def _plate_centre_frame(r, off_x: int, off_y: int) -> tuple[float, float] | None:
+    """Centre of a detected plate's bbox in *frame* pixels. None if no bounding box."""
+    fb = _plate_bbox_frame(r, off_x, off_y)
+    if fb is None:
+        return None
+    x1, y1, x2, y2 = fb
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
-    Plates whose detection centre falls inside a configured ANPR ignore zone (see
-    `anpr_mask`) are discarded — this masks a fixed background/parked plate that sits inside
-    the moving car's crop, regardless of what it OCRs to.
+
+def read_plates_located(frame_bgr: np.ndarray,
+                        bbox_xyxy: tuple[float, float, float, float],
+                        camera: str | None = None) -> list[dict]:
+    """
+    Detect + OCR all number plates inside the car bounding box. Returns one dict per read
+    above ALPR_MIN_CONF: {text, conf, box, centre} where `box` is the plate's bounding box and
+    `centre` its centre, both normalised to the *full frame* (0..1) — or None if the detector
+    gave no bounding box. The frame-normalised location is what lets the caller offer to add an
+    ANPR ignore box for a fixed parked/background plate.
+
+    Plates whose detection centre falls inside a configured ANPR ignore zone (see `anpr_mask`)
+    are discarded here, so masked plates never reach the caller.
     """
     if not config.ENABLE_ALPR or frame_bgr is None or bbox_xyxy is None:
         return []
@@ -115,7 +125,7 @@ def read_plates(frame_bgr: np.ndarray,
         log.warning("ALPR predict failed: %s", e)
         return []
 
-    reads: list[tuple[str, float]] = []
+    reads: list[dict] = []
     for r in results:
         if not r.ocr:
             continue
@@ -123,13 +133,29 @@ def read_plates(frame_bgr: np.ndarray,
         conf = _mean_conf(r.ocr.confidence)
         if len(text) < 4 or conf < config.ALPR_MIN_CONF:
             continue
-        # Spatial ignore zone: drop plates detected at a masked frame location.
-        centre = _plate_centre_frame(r, cx1, cy1)
-        if centre is not None and w and h and anpr_mask.is_ignored(cam, centre[0] / w, centre[1] / h):
-            log.info("ignored plate %s at masked region (%.0f,%.0f)", text, centre[0], centre[1])
-            continue
-        reads.append((text, round(conf, 3)))
+        fb = _plate_bbox_frame(r, cx1, cy1)
+        centre = None
+        box = None
+        if fb is not None and w and h:
+            fx1, fy1, fx2, fy2 = fb
+            cxn = ((fx1 + fx2) / 2.0) / w
+            cyn = ((fy1 + fy2) / 2.0) / h
+            # Spatial ignore zone: drop plates detected at a masked frame location.
+            if anpr_mask.is_ignored(cam, cxn, cyn):
+                log.info("ignored plate %s at masked region (%.3f,%.3f)", text, cxn, cyn)
+                continue
+            centre = [round(cxn, 5), round(cyn, 5)]
+            box = [round(max(0.0, min(1.0, fx1 / w)), 5), round(max(0.0, min(1.0, fy1 / h)), 5),
+                   round(max(0.0, min(1.0, fx2 / w)), 5), round(max(0.0, min(1.0, fy2 / h)), 5)]
+        reads.append({"text": text, "conf": round(conf, 3), "box": box, "centre": centre})
     return reads
+
+
+def read_plates(frame_bgr: np.ndarray,
+                bbox_xyxy: tuple[float, float, float, float],
+                camera: str | None = None) -> list[tuple[str, float]]:
+    """Every plate read above ALPR_MIN_CONF as (plate_text, mean_confidence)."""
+    return [(r["text"], r["conf"]) for r in read_plates_located(frame_bgr, bbox_xyxy, camera)]
 
 
 def read_plate(frame_bgr: np.ndarray,

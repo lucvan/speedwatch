@@ -32,6 +32,7 @@ from . import intrinsics as intr_mod
 from . import embed as embed_mod
 from . import vehicles as vehicles_mod
 from . import anpr_mask as anpr_mask_mod
+from . import stats as stats_mod
 
 log = logging.getLogger(__name__)
 
@@ -160,6 +161,13 @@ async def dashboard(request: Request):
     leaders = await db.list_vehicles(order_by="max_mph", min_passes=1)
     leaders = leaders[:8]
     has_cal = (await db.get_active_calibration(config.CAMERA_NAME)) is not None
+    road_speeds = await db.all_pass_speeds()
+    speed_summary = stats_mod.speed_summary(road_speeds, config.SPEED_WARN_MPH, config.SPEED_LIMIT_MPH)
+    markers = []
+    if speed_summary:
+        markers.append((speed_summary["p85"], "#4fc3f7", f"85th {speed_summary['p85']:g}"))
+    dist_svg = stats_mod.speed_distribution_svg(
+        road_speeds, warn=config.SPEED_WARN_MPH, limit=config.SPEED_LIMIT_MPH, markers=markers)
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "stats": stats,
@@ -167,6 +175,8 @@ async def dashboard(request: Request):
         "leaders": leaders,
         "has_calibration": has_cal,
         "pipeline_status": _pipeline_status,
+        "speed_summary": speed_summary,
+        "dist_svg": dist_svg,
     })
 
 
@@ -341,6 +351,21 @@ async def vehicle_detail(request: Request, plate: str):
         visual = [{"plate": pl, "sim": s, "rep_image": repmap.get(pl),
                    "strong": s >= config.REID_SIM_THRESHOLD} for pl, s in visual_raw]
 
+    # Speed distribution: this vehicle's passes overlaid on the whole road, + percentile rank.
+    veh_speeds = [p.get("sw_speed_mph") for p in passes]
+    road_speeds = await db.all_pass_speeds()
+    veh_summary = stats_mod.speed_summary(veh_speeds, config.SPEED_WARN_MPH, config.SPEED_LIMIT_MPH)
+    road_sorted = sorted([s for s in road_speeds if s is not None])
+    median_rank = (stats_mod.percentile_rank(road_sorted, veh_summary["median"])
+                   if veh_summary else None)
+    dist_svg = stats_mod.speed_distribution_svg(
+        road_speeds, highlight=veh_speeds,
+        warn=config.SPEED_WARN_MPH, limit=config.SPEED_LIMIT_MPH,
+        highlight_label="median")
+    # Per-pass percentile rank vs the whole road (for the pass table).
+    pass_ranks = {p["id"]: stats_mod.percentile_rank(road_sorted, p.get("sw_speed_mph"))
+                  for p in passes}
+
     return templates.TemplateResponse("vehicle.html", {
         "request": request,
         "vehicle": vehicle,
@@ -349,6 +374,10 @@ async def vehicle_detail(request: Request, plate: str):
         "suggestions": suggestions,
         "visual": visual,
         "reid_available": embed_mod.available(),
+        "veh_summary": veh_summary,
+        "median_rank": median_rank,
+        "dist_svg": dist_svg,
+        "pass_ranks": pass_ranks,
     })
 
 
@@ -889,6 +918,22 @@ async def lens_preview(camera: str, k1: float = 0.0, k2: float = 0.0,
     if not ok:
         raise HTTPException(status_code=500, detail="encode failed")
     return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
+@app.post("/api/anpr-mask/add")
+async def api_anpr_mask_add(request: Request):
+    """Append one ANPR ignore rectangle (normalised [x1,y1,x2,y2], 0..1) to a camera's existing
+    set. Used by the plate-recompute UI to mask a fixed parked/background plate in one click.
+    Takes effect on the next vehicle (mtime-cached, no restart)."""
+    body = await request.json()
+    camera = body.get("camera", config.CAMERA_NAME)
+    rect = body.get("rect")
+    if not rect or len(rect) != 4:
+        raise HTTPException(status_code=422, detail="rect [x1,y1,x2,y2] required")
+    existing = anpr_mask_mod.load(camera)
+    anpr_mask_mod.save(camera, list(existing) + [rect])
+    saved = anpr_mask_mod.load(camera)
+    return JSONResponse({"ok": True, "count": len(saved)})
 
 
 @app.post("/api/anpr-mask/save")
