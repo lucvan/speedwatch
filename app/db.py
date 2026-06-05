@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS vehicle (
     user_notes       TEXT,        -- free-form notes / metadata
     rep_image_path   TEXT,        -- representative car crop (best plate read)
     rep_plate_conf   REAL,        -- plate confidence of the rep image's pass
+    rep_pinned       INTEGER NOT NULL DEFAULT 0,  -- user manually pinned rep image (don't auto-override)
     confirmed_speeder INTEGER NOT NULL DEFAULT 0,  -- user-flagged: all passes count as evidence
     created_at       REAL NOT NULL
 );
@@ -131,6 +132,11 @@ async def init_db():
             pass
         try:
             await conn.execute("ALTER TABLE vehicle ADD COLUMN confirmed_speeder INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        # Manual rep-image pin: when set, the auto-updater never overrides the chosen thumbnail.
+        try:
+            await conn.execute("ALTER TABLE vehicle ADD COLUMN rep_pinned INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
         # Manual vehicle assignment: attach a plateless / mis-read pass to a vehicle by plate.
@@ -632,12 +638,25 @@ async def ensure_vehicle(plate: str) -> None:
 
 
 async def update_vehicle_rep_image(plate: str, image_path: str, plate_conf: float) -> None:
-    """Set the representative car image if this pass has the best plate confidence so far."""
+    """Set the representative car image if this pass has the best plate confidence so far.
+    Never overrides a manually-pinned rep image (rep_pinned=1)."""
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
             """UPDATE vehicle SET rep_image_path=?, rep_plate_conf=?
-               WHERE plate=? AND (rep_plate_conf IS NULL OR ? > rep_plate_conf)""",
+               WHERE plate=? AND rep_pinned=0 AND (rep_plate_conf IS NULL OR ? > rep_plate_conf)""",
             (image_path, plate_conf, plate, plate_conf),
+        )
+        await conn.commit()
+
+
+async def set_vehicle_rep_image_manual(plate: str, image_path: str) -> None:
+    """Manually pin a vehicle's representative thumbnail to a specific pass's image.
+    Sets rep_pinned=1 so the auto-updater (best-plate-confidence) won't override it."""
+    await ensure_vehicle(plate)
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE vehicle SET rep_image_path=?, rep_pinned=1 WHERE plate=?",
+            (image_path, plate),
         )
         await conn.commit()
 
@@ -684,6 +703,30 @@ async def unassign_pass(pass_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("UPDATE pass SET assigned_plate=NULL WHERE id=?", (pass_id,))
         await conn.commit()
+
+
+# Synthetic identifier for a vehicle grouped from plateless passes (no plate read yet).
+# Looks like "UNK-0001"; UI renders it as an "unidentified" vehicle. Renamed later via the
+# merge / recompute-plate flow once a real plate is determined.
+SYNTH_PLATE_PREFIX = "UNK-"
+
+
+async def next_synthetic_plate() -> str:
+    """Allocate the next free synthetic plate id (UNK-NNNN), scanning both committed
+    vehicle rows and any plates already assigned to passes."""
+    import re as _re
+    pat = _re.compile(rf"^{_re.escape(SYNTH_PLATE_PREFIX)}(\d+)$")
+    like = SYNTH_PLATE_PREFIX + "%"
+    nums = [0]
+    async with aiosqlite.connect(DB_PATH) as conn:
+        for sql in ("SELECT plate FROM vehicle WHERE plate LIKE ?",
+                    "SELECT DISTINCT assigned_plate FROM pass WHERE assigned_plate LIKE ?"):
+            cur = await conn.execute(sql, (like,))
+            for (val,) in await cur.fetchall():
+                m = pat.match(val or "")
+                if m:
+                    nums.append(int(m.group(1)))
+    return f"{SYNTH_PLATE_PREFIX}{max(nums) + 1:04d}"
 
 
 # ── Vehicle Re-ID embeddings (visual grouping) ───────────────────────────────

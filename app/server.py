@@ -563,6 +563,22 @@ async def api_assign_bulk(request: Request):
     return JSONResponse({"ok": True, "plate": canon, "count": len(pass_ids)})
 
 
+@app.post("/api/passes/group-unidentified")
+async def api_group_unidentified(request: Request):
+    """Group plateless passes into a new no-plate vehicle record. Body: {pass_ids: [int]}.
+    Allocates a synthetic id (UNK-NNNN) and assigns the passes to it, so visually-identical
+    cars with no readable plate still get a single vehicle record. Rename later via merge /
+    recompute-plate once a plate is found."""
+    body = await request.json()
+    pass_ids = body.get("pass_ids") or []
+    if not pass_ids:
+        raise HTTPException(status_code=422, detail="pass_ids required")
+    plate = await db.next_synthetic_plate()
+    for pid in pass_ids:
+        await db.assign_pass_to_vehicle(int(pid), plate)
+    return JSONResponse({"ok": True, "plate": plate, "count": len(pass_ids)})
+
+
 @app.post("/api/embeddings/backfill")
 async def api_embeddings_backfill():
     """Compute Re-ID embeddings for existing passes that have a crop but no embedding."""
@@ -707,6 +723,38 @@ async def api_vehicle_meta(
 ):
     await db.update_vehicle_meta(plate, user_description or None, user_notes or None)
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/vehicle/{plate}/rep-image")
+async def api_vehicle_rep_image(plate: str, request: Request):
+    """Pin a vehicle's representative thumbnail to a chosen pass's image. Body: {pass_id}.
+    Fixes a stale/wrong rep image (e.g. after manually cleaning up a mis-grouped pass)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pass_id = body.get("pass_id")
+    if not pass_id:
+        raise HTTPException(status_code=422, detail="pass_id required")
+    p = await db.get_pass(int(pass_id))
+    if p is None:
+        raise HTTPException(status_code=404, detail="Pass not found")
+    img = p.get("car_crop_path") or p.get("entry_frame_path") or p.get("entry_frame_raw_path")
+    if not img:
+        raise HTTPException(status_code=422, detail="This pass has no image to use as a thumbnail")
+    canon = await db.canonical_plate(plate)
+    await db.set_vehicle_rep_image_manual(canon, img)
+    return JSONResponse({"ok": True, "rep_image_path": img, "plate": canon})
+
+
+@app.post("/api/vehicle/{plate}/recompute-plate")
+async def api_vehicle_recompute_plate(plate: str):
+    """Re-read the plate from every image across all of this vehicle's passes and suggest a
+    combined best guess. Does not apply it — the UI confirms, then applies via /merge."""
+    if not config.ENABLE_ALPR:
+        raise HTTPException(status_code=503, detail="ANPR is disabled")
+    canon = await db.canonical_plate(plate)
+    return JSONResponse(await vehicles_mod.recompute_plate(canon))
 
 
 @app.post("/api/vehicle/{plate}/describe")

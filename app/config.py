@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.2"
 
 try:
     from dotenv import load_dotenv

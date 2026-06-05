@@ -24,8 +24,11 @@
 <p class="text-muted small">
   Passes with no recognised plate, grouped by how similar the cars look (Vehicle Re-ID).
   For each group you can <strong>promote it to a vehicle</strong> (give it a name/label — it then
-  appears in the Vehicles list) or <strong>merge it into an existing plate</strong>. Visual grouping
-  is a suggestion — check the thumbnails before confirming. Untick any pass that doesn't belong.
+  appears in the Vehicles list), <strong>merge it into an existing plate</strong>, or
+  <strong>Group (no plate)</strong> to create a record for a car that's clearly the same but whose
+  plate was never read (it gets a temporary <code>UNK-NNNN</code> id you can rename later via the
+  vehicle page's recompute / merge tools). Visual grouping is a suggestion — check the thumbnails
+  before confirming. Untick any pass that doesn't belong.
 </p>
 
 {% if clusters %}
@@ -44,6 +47,10 @@
              style="width:170px" placeholder="plate / label">
       <button class="btn btn-sm btn-primary" onclick="assignCluster(this, {{ loop.index }})">
         Promote / merge
+      </button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="groupNoPlate(this, {{ loop.index }})"
+              title="Create a vehicle record with no plate yet from the ticked passes">
+        Group (no plate)
       </button>
       <span class="cl-status small text-muted"></span>
     </div>
@@ -114,6 +121,25 @@ async function assignCluster(btn, idx) {
   const d = await r.json();
   if (r.ok && d.ok) {
     status.innerHTML = '→ <a href="/vehicle/' + d.plate + '">' + d.plate + '</a> (' + d.count + ')';
+    status.className = 'cl-status small text-success';
+    card.querySelectorAll('.cl-cb:checked').forEach(c => c.closest('label').style.opacity = 0.4);
+  } else {
+    status.textContent = 'failed: ' + (d.detail || r.status); status.className = 'cl-status small text-danger';
+  }
+}
+async function groupNoPlate(btn, idx) {
+  const card = document.getElementById('cluster-' + idx);
+  const status = card.querySelector('.cl-status');
+  const ids = Array.from(card.querySelectorAll('.cl-cb:checked')).map(c => parseInt(c.value));
+  if (!ids.length) { status.textContent = 'no passes ticked'; status.className = 'cl-status small text-warning'; return; }
+  status.textContent = 'saving…'; status.className = 'cl-status small text-muted';
+  const r = await fetch('/api/passes/group-unidentified', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pass_ids: ids})
+  });
+  const d = await r.json();
+  if (r.ok && d.ok) {
+    status.innerHTML = '→ <a href="/vehicle/' + encodeURIComponent(d.plate) + '">' + d.plate + '</a> (' + d.count + ' · no plate)';
     status.className = 'cl-status small text-success';
     card.querySelectorAll('.cl-cb:checked').forEach(c => c.closest('label').style.opacity = 0.4);
   } else {

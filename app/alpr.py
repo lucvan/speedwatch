@@ -81,22 +81,23 @@ def _plate_centre_frame(r, off_x: int, off_y: int) -> tuple[float, float] | None
         return None
 
 
-def read_plate(frame_bgr: np.ndarray,
-               bbox_xyxy: tuple[float, float, float, float],
-               camera: str | None = None) -> tuple[str, float] | None:
+def read_plates(frame_bgr: np.ndarray,
+                bbox_xyxy: tuple[float, float, float, float],
+                camera: str | None = None) -> list[tuple[str, float]]:
     """
-    Detect + OCR the number plate inside the car bounding box.
-    Returns (plate_text, mean_confidence) for the best plate above ALPR_MIN_CONF, or None.
+    Detect + OCR all number plates inside the car bounding box, returning every read above
+    ALPR_MIN_CONF as (plate_text, mean_confidence). Used both by `read_plate` (which keeps the
+    single best) and by the multi-image plate recompute (which combines many reads).
 
     Plates whose detection centre falls inside a configured ANPR ignore zone (see
     `anpr_mask`) are discarded — this masks a fixed background/parked plate that sits inside
     the moving car's crop, regardless of what it OCRs to.
     """
     if not config.ENABLE_ALPR or frame_bgr is None or bbox_xyxy is None:
-        return None
+        return []
     alpr = _get_alpr()
     if alpr is None:
-        return None
+        return []
 
     cam = camera or config.CAMERA_NAME
     h, w = frame_bgr.shape[:2]
@@ -105,16 +106,16 @@ def read_plate(frame_bgr: np.ndarray,
     cx1 = max(0, int(x1) - pad); cy1 = max(0, int(y1) - pad)
     cx2 = min(w, int(x2) + pad); cy2 = min(h, int(y2) + pad)
     if cx2 - cx1 < 16 or cy2 - cy1 < 16:
-        return None
+        return []
     crop = frame_bgr[cy1:cy2, cx1:cx2]
 
     try:
         results = alpr.predict(crop)
     except Exception as e:
         log.warning("ALPR predict failed: %s", e)
-        return None
+        return []
 
-    best: tuple[str, float] | None = None
+    reads: list[tuple[str, float]] = []
     for r in results:
         if not r.ocr:
             continue
@@ -127,6 +128,18 @@ def read_plate(frame_bgr: np.ndarray,
         if centre is not None and w and h and anpr_mask.is_ignored(cam, centre[0] / w, centre[1] / h):
             log.info("ignored plate %s at masked region (%.0f,%.0f)", text, centre[0], centre[1])
             continue
-        if best is None or conf > best[1]:
-            best = (text, round(conf, 3))
-    return best
+        reads.append((text, round(conf, 3)))
+    return reads
+
+
+def read_plate(frame_bgr: np.ndarray,
+               bbox_xyxy: tuple[float, float, float, float],
+               camera: str | None = None) -> tuple[str, float] | None:
+    """
+    Detect + OCR the number plate inside the car bounding box.
+    Returns (plate_text, mean_confidence) for the best plate above ALPR_MIN_CONF, or None.
+    """
+    reads = read_plates(frame_bgr, bbox_xyxy, camera)
+    if not reads:
+        return None
+    return max(reads, key=lambda r: r[1])

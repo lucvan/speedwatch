@@ -240,6 +240,110 @@ async def backfill_car_images(limit: int | None = None) -> dict:
     return result
 
 
+# ── Recompute a vehicle's plate from every image across all its passes ────────
+# Combining many independent ANPR reads beats any single read: low-confidence or
+# partially-occluded plates often agree once aggregated. We score whole-string reads by
+# summed confidence and also build a per-position character-vote consensus, then suggest
+# the better-supported of the two for the user to confirm.
+
+def _collect_reads_sync(pass_row: dict) -> list[tuple[str, float]]:
+    """Run ANPR over every stored image of one pass and return all plate reads."""
+    import cv2
+    from . import detect as detect_mod, alpr as alpr_mod
+    reads: list[tuple[str, float]] = []
+
+    # The car crop is already a tight car image — OCR it whole.
+    crop_rel = pass_row.get("car_crop_path")
+    if crop_rel:
+        p = Path(config.DATA_DIR) / crop_rel
+        if p.exists():
+            img = cv2.imread(str(p))
+            if img is not None:
+                h, w = img.shape[:2]
+                reads += alpr_mod.read_plates(img, (0, 0, w, h))
+
+    # The raw full-frame stills — detect cars first, then OCR each box.
+    for key in ("entry_frame_raw_path", "exit_frame_raw_path", "entry_frame_path", "exit_frame_path"):
+        rel = pass_row.get(key)
+        if not rel:
+            continue
+        p = Path(config.DATA_DIR) / rel
+        if not p.exists():
+            continue
+        img = cv2.imread(str(p))
+        if img is None:
+            continue
+        for d in detect_mod.run(img):
+            reads += alpr_mod.read_plates(img, d.bbox_xyxy)
+    return reads
+
+
+def _aggregate_plate_reads(reads: list[tuple[str, float]]) -> dict | None:
+    """Combine many (plate, confidence) reads into a single suggestion.
+    Returns {suggested, consensus, candidates[], num_reads} or None if there are no reads."""
+    if not reads:
+        return None
+    from collections import defaultdict
+    score: dict[str, float] = defaultdict(float)
+    count: dict[str, int]   = defaultdict(int)
+    maxc:  dict[str, float] = defaultdict(float)
+    for text, conf in reads:
+        score[text] += conf
+        count[text] += 1
+        maxc[text]   = max(maxc[text], conf)
+    candidates = [{"plate": t, "count": count[t],
+                   "total_conf": round(score[t], 3), "max_conf": round(maxc[t], 3)}
+                  for t in score]
+    candidates.sort(key=lambda c: (-c["total_conf"], -c["max_conf"]))
+
+    # Per-position character vote among reads of the dominant (most-confidently-seen) length.
+    len_score: dict[int, float] = defaultdict(float)
+    for text, conf in reads:
+        len_score[len(text)] += conf
+    dom_len = max(len_score, key=lambda L: len_score[L])
+    same_len = [(t, c) for t, c in reads if len(t) == dom_len]
+    consensus = None
+    if same_len:
+        cols = [defaultdict(float) for _ in range(dom_len)]
+        for text, conf in same_len:
+            for i, ch in enumerate(text):
+                cols[i][ch] += conf
+        consensus = "".join(max(col, key=lambda k: col[k]) for col in cols)
+
+    # Prefer the character-vote consensus when several reads of that length back it;
+    # otherwise fall back to the single best-scoring whole-string read.
+    if consensus and len(same_len) >= 2:
+        suggested = consensus
+    else:
+        suggested = candidates[0]["plate"]
+
+    return {"suggested": suggested, "consensus": consensus,
+            "candidates": candidates[:8], "num_reads": len(reads)}
+
+
+async def recompute_plate(plate: str) -> dict:
+    """Re-read the plate for a vehicle by running ANPR over every image of every pass and
+    combining the results. Returns a suggestion dict (does not apply it — the caller
+    confirms and applies via the merge flow)."""
+    rows = await db.list_passes_for_plate(plate)
+    loop = asyncio.get_event_loop()
+    all_reads: list[tuple[str, float]] = []
+    for row in rows:
+        try:
+            all_reads += await loop.run_in_executor(None, _collect_reads_sync, row)
+        except Exception as e:
+            log.warning("recompute_plate: reads for pass %s failed: %s", row.get("id"), e)
+    agg = _aggregate_plate_reads(all_reads)
+    if agg is None:
+        return {"suggested": None, "consensus": None, "candidates": [],
+                "num_reads": 0, "num_passes": len(rows), "current": plate}
+    agg["num_passes"] = len(rows)
+    agg["current"] = plate
+    log.info("recompute_plate %s → %s (%d reads, %d passes)",
+             plate, agg["suggested"], agg["num_reads"], len(rows))
+    return agg
+
+
 # ── Vehicle Re-ID embeddings: backfill, clustering, visual similarity ─────────
 
 def _embed_crop_sync(crop_rel: str):

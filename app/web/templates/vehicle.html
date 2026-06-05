@@ -5,6 +5,9 @@
 <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
   <a href="/vehicles" class="btn btn-sm btn-outline-secondary">← Vehicles</a>
   <span class="badge plate-badge fs-4">{{ vehicle.plate }}</span>
+  {% if vehicle.plate.startswith('UNK-') %}
+  <span class="badge bg-secondary" title="Grouped from plateless passes — no plate read yet">❓ unidentified (no plate)</span>
+  {% endif %}
   <button class="btn btn-sm ms-auto {{ 'btn-danger' if vehicle.confirmed_speeder else 'btn-outline-danger' }}"
           data-on="{{ 1 if vehicle.confirmed_speeder else 0 }}"
           onclick="confirmVehicle(this)"
@@ -142,6 +145,16 @@
       <span id="merge-status" class="small text-muted"></span>
     </div>
     <div class="small text-muted mt-1">Tip: edit “Correct plate” if the OCR never read it right — the group will use that.</div>
+
+    <hr style="border-color:#2a2a3a">
+    <!-- Recompute plate from every image across all passes -->
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <button class="btn btn-sm btn-outline-info" onclick="recomputePlate(this)"
+              title="Run plate recognition over every saved image of every pass and combine the reads">
+        🔁 Recompute plate from all images</button>
+      <span id="recompute-status" class="small text-muted"></span>
+    </div>
+    <div id="recompute-result" class="mt-2 small" style="display:none"></div>
   </div>
 </div>
 
@@ -149,20 +162,27 @@
 <div class="table-responsive">
 <table class="table table-hover table-sm align-middle">
   <thead class="table-dark">
-    <tr><th style="width:1%">Thumb</th><th>When</th><th class="text-end">Speed</th><th class="text-end">Plate conf</th><th>Conf</th><th>Label</th><th></th></tr>
+    <tr><th style="width:1%">Thumb</th><th>When</th><th class="text-end">Speed</th><th class="text-end">Plate conf</th><th>Conf</th><th>Label</th><th>Thumbnail</th><th></th></tr>
   </thead>
   <tbody>
   {% for p in passes %}
+  {% set img = p.car_crop_path or p.entry_frame_path %}
+  {% set is_rep = img and vehicle.rep_image_path == img %}
   <tr onclick="window.location='/session/{{ p.session_id }}'" style="cursor:pointer">
     <td class="thumb-car">
-      {% set img = p.car_crop_path or p.entry_frame_path %}
-      {% if img %}<img src="/{{ img }}" loading="lazy">{% else %}<span class="text-muted small">—</span>{% endif %}
+      {% if img %}<img src="/{{ img }}" loading="lazy"
+                       style="{{ 'outline:2px solid var(--accent);outline-offset:1px' if is_rep else '' }}">{% else %}<span class="text-muted small">—</span>{% endif %}
     </td>
     <td class="small text-nowrap" title="{{ fmt_ts(p.start_ts) }}">{{ fmt_ago(p.start_ts) }}</td>
     <td class="text-end"><span class="spd spd-{{ speed_band(p.sw_speed_mph) }}">{{ fmt_mph(p.sw_speed_mph) }}</span> <span class="unit text-muted small">mph</span></td>
     <td class="text-end small text-muted">{{ "%.0f"|format((p.plate_confidence or 0) * 100) }}%</td>
     <td><span class="conf-badge bg-{{ confidence_class(p.confidence) }}">{{ "%.0f"|format(p.confidence * 100) }}%</span></td>
     <td>{% if p.user_label %}<span class="badge badge-label-{{ p.user_label }}">{{ p.user_label|replace('_',' ') }}</span>{% else %}<span class="text-muted small">—</span>{% endif %}</td>
+    <td>
+      {% if is_rep %}<span class="badge bg-success" title="Current vehicle thumbnail">★ thumbnail</span>
+      {% elif img %}<button class="btn btn-sm btn-outline-secondary py-0" onclick="setRepImage({{ p.id }}, this, event)" title="Use this pass's image as the vehicle thumbnail">Set as thumbnail</button>
+      {% else %}<span class="text-muted small">—</span>{% endif %}
+    </td>
     <td><a href="/session/{{ p.session_id }}" class="btn btn-sm btn-outline-info py-0" onclick="event.stopPropagation()">View</a></td>
   </tr>
   {% endfor %}
@@ -223,6 +243,57 @@ async function unmergeAll() {
   await fetch('/api/vehicle/' + CURRENT + '/unmerge', {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({all:true})});
   location.reload();
+}
+async function setRepImage(passId, btn, ev) {
+  if (ev) ev.stopPropagation();
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Setting…';
+  const r = await fetch('/api/vehicle/' + CURRENT + '/rep-image', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pass_id: passId})});
+  if (r.ok) location.reload();
+  else { alert('Failed: ' + await r.text()); btn.textContent = old; btn.disabled = false; }
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function recomputePlate(btn) {
+  const st = document.getElementById('recompute-status');
+  const box = document.getElementById('recompute-result');
+  btn.disabled = true; st.textContent = 'reading every pass image… (this can take a while)';
+  try {
+    const r = await fetch('/api/vehicle/' + CURRENT + '/recompute-plate', {method:'POST'});
+    const d = await r.json();
+    if (!r.ok) { st.textContent = 'failed: ' + (d.detail || r.status); btn.disabled = false; return; }
+    st.textContent = '';
+    box.style.display = 'block';
+    if (!d.suggested) {
+      box.innerHTML = '<span class="text-muted">No plate could be read from any image ('
+                    + (d.num_passes || 0) + ' passes scanned).</span>';
+      btn.disabled = false; return;
+    }
+    const rows = (d.candidates || []).map(c =>
+      '<tr><td class="font-monospace">' + esc(c.plate) + '</td><td class="text-end">' + c.count
+      + '</td><td class="text-end">' + c.total_conf + '</td><td class="text-end">' + c.max_conf
+      + '</td></tr>').join('');
+    let html = '<div class="mb-2">Suggested plate from <strong>' + d.num_reads
+      + '</strong> reads across <strong>' + d.num_passes + '</strong> passes: '
+      + '<span class="badge plate-badge fs-6">' + esc(d.suggested) + '</span>';
+    if (d.consensus && d.consensus !== d.suggested)
+      html += ' <span class="text-muted">char-vote: ' + esc(d.consensus) + '</span>';
+    if (d.suggested !== CURRENT)
+      html += ' <button class="btn btn-sm btn-primary ms-2" onclick="applyRecomputed(\''
+            + esc(d.suggested) + '\')">Apply this plate</button>';
+    else
+      html += ' <span class="text-success ms-2">— matches the current plate</span>';
+    html += '</div><table class="table table-sm table-dark"><thead><tr><th>Read</th>'
+      + '<th class="text-end">Votes</th><th class="text-end">Σ conf</th>'
+      + '<th class="text-end">Max</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    box.innerHTML = html;
+    btn.disabled = false;
+  } catch (e) { st.textContent = 'failed: ' + e; btn.disabled = false; }
+}
+function applyRecomputed(plate) {
+  if (!confirm('Set this vehicle\'s plate to ' + plate + '?\nAll its passes will be grouped under it.')) return;
+  document.getElementById('canonical').value = plate;
+  mergePlates();
 }
 </script>
 {% endblock %}
