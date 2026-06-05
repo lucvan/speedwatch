@@ -126,6 +126,58 @@ out at a glance.
 - **Evidence** — confirmed-speeder passes with ZIP/CSV export.
 - **Calibrate** — lens + zone calibration (see [Calibration](#calibration)).
 - **Settings** — read-only view of the running configuration.
+- **Users** *(admin only)* — manage who can sign in and at what role (see
+  [Authentication](#authentication)).
+
+## Authentication
+
+The UI can be gated behind **Google SSO** with a per-user allowlist and role-based access.
+This is essential if you expose the app beyond `localhost` (e.g. via a reverse proxy or
+Tailscale), since the app itself becomes the only access gate.
+
+**Auth is opt-in and config-driven — there is no build flag.** It turns on automatically
+whenever `GOOGLE_CLIENT_ID` is set in `.env`:
+
+| `GOOGLE_CLIENT_ID` | Behaviour |
+|---|---|
+| **set** | Every route requires a signed-in, allow-listed user |
+| **blank** (default) | **No authentication** — the app is fully open. A prominent **warning is logged on startup**. Only safe on `localhost` for development. |
+
+> ⚠️ Never expose the app publicly with auth disabled. If `GOOGLE_CLIENT_ID` is blank the
+> startup log prints a multi-line `AUTHENTICATION DISABLED` banner — treat it as a red flag.
+
+### How it works
+
+1. **Identity** — Google OpenID Connect. The Google ID token is used **once at login** to
+   learn the user's email; the app then issues its own signed-cookie session and never
+   stores Google tokens (so it's unaffected by Google's testing-mode refresh-token limits).
+2. **Allowlist** — the email must exist in the `app_user` table. Google authenticating an
+   account is **not** sufficient; an admin must have added it. Unknown accounts get a 403.
+3. **Roles** — `readonly` < `edit` < `admin`, enforced per request:
+   - **readonly** — view every page and read-only APIs.
+   - **edit** — the above + label/curate/merge/assign/recompute actions.
+   - **admin** — everything + calibration changes, deletes, and **user management**.
+
+`BOOTSTRAP_ADMIN` is seeded as an `admin` on first startup (and can't be removed or demoted
+through the UI, so you can't lock yourself out). Admins manage everyone else on the **Users**
+page: add an email, set/raise/lower its role, or remove it (access is revoked immediately on
+the next request — sessions are re-checked against the DB every request).
+
+### Setup
+
+1. In the [Google Cloud Console](https://console.cloud.google.com): configure the OAuth
+   consent screen (**External**; add allowed accounts as **test users** while in *Testing*),
+   then create an **OAuth client ID → Web application**.
+2. Add an **Authorized redirect URI** that exactly matches `OAUTH_REDIRECT_URI`
+   (scheme + host, no port/trailing slash), e.g. `https://speedwatch.e49ta.com/auth/callback`.
+   Google only accepts HTTPS or `localhost` redirect URIs — a bare-IP/HTTP host won't work,
+   so front the app with TLS (reverse proxy / Tailscale) if exposing it.
+3. Fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET` and `BOOTSTRAP_ADMIN`
+   in `.env`, then restart the service.
+
+Behind a TLS-terminating proxy, run uvicorn with `--proxy-headers` (or set a fixed
+`OAUTH_REDIRECT_URI`, as the default does) so the callback URL is built as the external
+HTTPS host rather than the internal `http://<ip>:<port>`.
 
 ## Configuration (`.env`)
 
@@ -145,6 +197,12 @@ out at a glance.
 | `DATA_DIR` | Where clips, logs, and the SQLite DB are written |
 | `PORT` | Web UI / API port (default `8765`) |
 | `HOST` | Bind address — `127.0.0.1` (localhost) or `0.0.0.0` (LAN, needs firewall rule) |
+| `GOOGLE_CLIENT_ID` | Google OAuth web-client ID. **Setting this enables authentication** (see [Authentication](#authentication)); blank = open app |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `SESSION_SECRET` | Random string signing the session cookie (e.g. `python -c "import secrets;print(secrets.token_urlsafe(48))"`) |
+| `OAUTH_REDIRECT_URI` | Exact redirect URI registered on the Google client (default `https://speedwatch.e49ta.com/auth/callback`) |
+| `BOOTSTRAP_ADMIN` | Email seeded as the first `admin` on startup (and protected from removal/demotion) |
+| `SESSION_MAX_AGE` | Session lifetime in seconds (default 30 days) |
 | `ENABLE_ALPR` | Toggle number-plate recognition (default on) |
 | `ALPR_DETECTOR_MODEL` / `ALPR_OCR_MODEL` | fast-alpr model names (auto-downloaded) |
 | `ALPR_MIN_CONF` | Minimum mean OCR confidence to accept a plate read |

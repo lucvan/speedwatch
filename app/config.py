@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.3.0"
 
 try:
     from dotenv import load_dotenv
@@ -110,6 +110,27 @@ INSTALL_DIR = str(Path(__file__).parent.parent)
 # other devices on the LAN (also needs a Windows firewall rule allowing inbound TCP on PORT).
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8765"))
+
+# ── Authentication (Google SSO) ────────────────────────────────────────────────
+# The UI is exposed publicly at https://speedwatch.e49ta.com (Synology reverse proxy),
+# so access is gated behind Google OpenID Connect + a per-user allowlist (app_user table).
+# Auth is ENABLED whenever a Google client id is present; if it's blank, auth is disabled
+# (localhost dev only — never leave the public host unauthenticated).
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+# Signed-cookie session secret (Starlette SessionMiddleware). Must be set when auth is on.
+SESSION_SECRET       = os.getenv("SESSION_SECRET", "")
+# The OAuth redirect URI is hard-pinned (not derived from request.url) because the app sits
+# behind a TLS-terminating proxy and would otherwise build an http://<lan-ip> callback that
+# Google rejects. Must EXACTLY match the Authorized redirect URI on the Google OAuth client.
+OAUTH_REDIRECT_URI   = os.getenv("OAUTH_REDIRECT_URI", "https://speedwatch.e49ta.com/auth/callback")
+# Seeded as an admin on startup (INSERT OR IGNORE — never downgrades an existing row) and
+# protected from deletion/demotion so the box can't be locked out of its own admin.
+BOOTSTRAP_ADMIN      = os.getenv("BOOTSTRAP_ADMIN", "").strip().lower()
+# Session lifetime in seconds (default 30 days). Users re-click "Sign in with Google" after.
+SESSION_MAX_AGE      = int(os.getenv("SESSION_MAX_AGE", str(30 * 24 * 3600)))
+
+AUTH_ENABLED = bool(GOOGLE_CLIENT_ID)
 
 # Per-stage timing profiler — logs avg ms per pipeline stage every PROFILE_FLUSH_S seconds.
 # Zero overhead when off. Turn on temporarily to find CPU hot spots.

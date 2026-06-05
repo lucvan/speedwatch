@@ -85,6 +85,13 @@
     .sw-nav-sep { height:1px; background:var(--border); margin:.5rem .75rem; }
     .sw-foot { margin-top:auto; padding:.75rem 1rem; border-top:1px solid var(--border); font-size:.72rem; color:var(--soft); }
     .sw-foot .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#5fd38a; margin-right:.35rem; }
+    .sw-user { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem; margin-bottom:.5rem; }
+    .sw-user-email { max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--soft); }
+    .sw-user-role { font-size:.62rem; text-transform:uppercase; letter-spacing:.04em; padding:.05rem .35rem;
+      border-radius:.6rem; background:var(--panel-3); color:var(--muted); }
+    .sw-user-role.role-admin { background:#2a0d0d; color:#d87070; }
+    .sw-user-role.role-edit  { background:#0d2030; color:#60b8d8; }
+    .sw-logout { margin-left:auto; color:var(--accent); }
     .sw-theme-btn {
       display:flex; align-items:center; gap:.5rem; width:100%; margin-bottom:.5rem;
       background:transparent; border:1px solid var(--border); color:var(--soft);
@@ -202,6 +209,7 @@
 </head>
 <body>
 {% set path = request.url.path %}
+{% set user = current_user(request) if current_user is defined else None %}
 <nav class="sw-sidebar">
   <a class="sw-brand" href="/">⏱ speedwatch <span class="ver">v{{ APP_VERSION }}</span></a>
   <div class="sw-nav">
@@ -214,11 +222,21 @@
     <div class="sw-nav-sep"></div>
     <a href="/calibrate"    class="{{ 'active' if path.startswith('/calibrate') }}"><span class="ic">🎯</span> Calibrate</a>
     <a href="/settings"     class="{{ 'active' if path.startswith('/settings') }}"><span class="ic">⚙️</span> Settings</a>
+    {% if user and user.role == 'admin' %}
+    <a href="/users"        class="{{ 'active' if path.startswith('/users') }}"><span class="ic">👥</span> Users</a>
+    {% endif %}
   </div>
   <div class="sw-foot">
     <button type="button" class="sw-theme-btn" onclick="toggleTheme()">
       <span id="theme-ic">🌙</span> <span id="theme-label">Dark mode</span>
     </button>
+    {% if user %}
+    <div class="sw-user" title="{{ user.email }}">
+      <span class="sw-user-email">{{ user.email }}</span>
+      <span class="sw-user-role role-{{ user.role }}">{{ user.role }}</span>
+      <a href="/logout" class="sw-logout">Sign out</a>
+    </div>
+    {% endif %}
     <div><span class="dot"></span>{{ pipeline_status if pipeline_status is defined else 'running' }}</div>
     {% if queue_size is defined and queue_size %}<div class="mt-1">{{ queue_size }} queued</div>{% endif %}
   </div>

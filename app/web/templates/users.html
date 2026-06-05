@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Users — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <h4 class="mb-0">Users</h4>
+  <span class="text-muted small">Google SSO allowlist — only these accounts can sign in</span>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header small">Add or update a user</div>
+  <div class="card-body">
+    <form id="add-form" class="row g-2 align-items-end">
+      <div class="col-12 col-md-6">
+        <label class="form-label small mb-1">Google email</label>
+        <input type="email" name="email" class="form-control" placeholder="person@gmail.com" required>
+      </div>
+      <div class="col-8 col-md-3">
+        <label class="form-label small mb-1">Role</label>
+        <select name="role" class="form-select">
+          <option value="readonly">readonly — view only</option>
+          <option value="edit">edit — label &amp; curate</option>
+          <option value="admin">admin — full + users</option>
+        </select>
+      </div>
+      <div class="col-4 col-md-3">
+        <button type="submit" class="btn btn-primary w-100">Save</button>
+      </div>
+    </form>
+    <div class="small text-muted mt-2">
+      Setting a role on an existing email updates it. The user must also be a
+      <b>test user</b> on the Google OAuth consent screen while the app is in “Testing”.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header small">{{ users|length }} authorised user{{ '' if users|length == 1 else 's' }}</div>
+  <div class="card-body p-0">
+    <table class="table table-hover mb-0 align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>Email</th>
+          <th style="width:140px">Role</th>
+          <th style="width:130px">Last login</th>
+          <th style="width:90px" class="text-end">Remove</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr data-email="{{ u.email }}">
+          <td>
+            {{ u.email }}
+            {% if u.email == bootstrap_admin %}<span class="badge bg-secondary ms-1">bootstrap</span>{% endif %}
+          </td>
+          <td>
+            <select class="form-select form-select-sm role-select"
+                    {{ 'disabled' if u.email == bootstrap_admin }}>
+              {% for r in roles %}
+              <option value="{{ r }}" {{ 'selected' if r == u.role }}>{{ r }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td class="small text-muted">{{ fmt_ago(u.last_login) if u.last_login else 'never' }}</td>
+          <td class="text-end">
+            {% if u.email != bootstrap_admin %}
+            <button class="btn btn-sm btn-outline-danger del-btn" title="Remove">✕</button>
+            {% else %}
+            <span class="text-muted small">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div id="msg" class="small mt-2"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const msg = document.getElementById('msg');
+function flash(text, ok) {
+  msg.textContent = text;
+  msg.style.color = ok ? '#5fd38a' : '#ff6b6b';
+}
+async function post(url, data) {
+  const body = new URLSearchParams(data);
+  const r = await fetch(url, { method: 'POST', body });
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+  return j;
+}
+
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await post('/api/users', { email: f.email.value.trim(), role: f.role.value });
+    location.reload();
+  } catch (err) { flash(err.message, false); }
+});
+
+document.querySelectorAll('.role-select').forEach(sel => {
+  sel.addEventListener('change', async (e) => {
+    const email = e.target.closest('tr').dataset.email;
+    try {
+      await post('/api/users', { email, role: e.target.value });
+      flash('Updated ' + email + ' → ' + e.target.value, true);
+    } catch (err) { flash(err.message, false); location.reload(); }
+  });
+});
+
+document.querySelectorAll('.del-btn').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    const email = e.target.closest('tr').dataset.email;
+    if (!confirm('Remove ' + email + '? They will lose access immediately.')) return;
+    try {
+      await post('/api/users/delete', { email });
+      e.target.closest('tr').remove();
+      flash('Removed ' + email, true);
+    } catch (err) { flash(err.message, false); }
+  });
+});
+</script>
+{% endblock %}

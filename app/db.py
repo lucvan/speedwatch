@@ -108,6 +108,17 @@ CREATE TABLE IF NOT EXISTS plate_alias (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_alias_canonical ON plate_alias(canonical);
+
+-- Authorised users (Google SSO allowlist). Login succeeds at Google for any account, but
+-- only emails present here may access the app, at the role recorded here.
+CREATE TABLE IF NOT EXISTS app_user (
+    email      TEXT PRIMARY KEY,                 -- google email, lowercased
+    role       TEXT NOT NULL DEFAULT 'readonly', -- readonly | edit | admin
+    name       TEXT,                             -- display name from Google profile
+    added_by   TEXT,                             -- email of the admin who added them
+    created_at REAL NOT NULL,
+    last_login REAL
+);
 """
 
 
@@ -188,6 +199,78 @@ async def init_db():
                     )
                 except Exception:
                     pass
+        # Seed the bootstrap admin (idempotent — never downgrades an existing row).
+        if config.BOOTSTRAP_ADMIN:
+            await conn.execute(
+                "INSERT OR IGNORE INTO app_user (email, role, added_by, created_at) "
+                "VALUES (?, 'admin', 'bootstrap', ?)",
+                (config.BOOTSTRAP_ADMIN, time.time()),
+            )
+        await conn.commit()
+
+
+# ── users (Google SSO allowlist) ─────────────────────────────────────────────
+
+VALID_ROLES = ("readonly", "edit", "admin")
+
+
+async def get_user(email: str) -> dict | None:
+    if not email:
+        return None
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute("SELECT * FROM app_user WHERE email=?", (email.lower(),))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def list_users() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT * FROM app_user ORDER BY "
+            "CASE role WHEN 'admin' THEN 0 WHEN 'edit' THEN 1 ELSE 2 END, email"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def count_admins() -> int:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM app_user WHERE role='admin'")
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+
+async def upsert_user(email: str, role: str, name: str | None = None,
+                      added_by: str | None = None) -> None:
+    """Add a user or change their role. Preserves created_at/name on an existing row."""
+    email = email.strip().lower()
+    if role not in VALID_ROLES:
+        raise ValueError(f"invalid role: {role}")
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            """INSERT INTO app_user (email, role, name, added_by, created_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(email) DO UPDATE SET
+                   role=excluded.role,
+                   name=COALESCE(excluded.name, app_user.name)""",
+            (email, role, name, added_by, time.time()),
+        )
+        await conn.commit()
+
+
+async def delete_user(email: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("DELETE FROM app_user WHERE email=?", (email.strip().lower(),))
+        await conn.commit()
+
+
+async def touch_last_login(email: str, name: str | None = None) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE app_user SET last_login=?, name=COALESCE(?, name) WHERE email=?",
+            (time.time(), name, email.strip().lower()),
+        )
         await conn.commit()
 
 

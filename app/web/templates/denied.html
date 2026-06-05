@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access denied · Speedwatch</title>
+  <style>
+    html { background:#111; }
+    body { font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#e0e0e0;
+      display:flex; min-height:100vh; align-items:center; justify-content:center; margin:0; text-align:center; }
+    .card { background:#1e1e2e; border:1px solid #2a2a3a; border-radius:.75rem;
+      padding:2.5rem 2.75rem; max-width:420px; width:100%; }
+    h1 { color:#ff6b6b; font-size:1.4rem; margin:0 0 .75rem; }
+    p { color:#9090b0; font-size:.9rem; line-height:1.5; }
+    code { color:#80cbc4; }
+    a { color:#4fc3f7; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Access denied</h1>
+    <p>The account <code>{{ email }}</code> isn't authorised to use Speedwatch.</p>
+    <p>Ask an administrator to add you, then <a href="/login">try again</a>.</p>
+  </div>
+</body>
+</html>

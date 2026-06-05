@@ -21,3 +21,8 @@ python-dotenv>=1.0.0
 # ANPR — pulls fast-plate-ocr + open-image-models. Both use the already-installed
 # onnxruntime (no version change), so DmlExecutionProvider is preserved.
 fast-alpr>=0.4.0
+# Google SSO (Authlib OAuth/OIDC). httpx is Authlib's async transport; itsdangerous backs
+# Starlette's SessionMiddleware. None touch onnxruntime/numpy, so DML is unaffected.
+authlib>=1.3.0
+httpx>=0.27.0
+itsdangerous>=2.1.0

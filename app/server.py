@@ -361,7 +361,7 @@ async def vehicle_detail(request: Request, plate: str):
     dist_svg = stats_mod.speed_distribution_svg(
         road_speeds, highlight=veh_speeds,
         warn=config.SPEED_WARN_MPH, limit=config.SPEED_LIMIT_MPH,
-        highlight_label="median")
+        highlight_label="median")  # the violet curve is labelled in the card legend
     # Per-pass percentile rank vs the whole road (for the pass table).
     pass_ranks = {p["id"]: stats_mod.percentile_rank(road_sorted, p.get("sw_speed_mph"))
                   for p in passes}
@@ -962,3 +962,11 @@ async def lens_save(camera: str, request: Request):
     log.info("Saved manual lens intrinsics for %s (k1=%.4f k2=%.4f f=%.3f) → %s",
              camera, k1, k2, f_frac, path)
     return JSONResponse({"ok": True, "image_w": w, "image_h": h})
+
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+# Installs the session + auth-gate middleware, the Google SSO routes (/login,
+# /auth/callback, /logout) and the admin Users screen. Registered last so it wraps
+# every route defined above. See app/auth.py for the role model.
+from . import auth as _auth  # noqa: E402
+_auth.install(app, templates)
