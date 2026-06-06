@@ -36,16 +36,33 @@ flowchart TD
     crop --> reid["Vehicle Re-ID (onnxruntime) → 512-d embedding"]
     crop -. optional .-> vis["vision model via Ollama → colour/make/model"]
 
-    spd --> db[("SQLite events")]
+    spd --> db[("SQLite events + clips/stills")]
     alpr --> db
     reid --> db
     vis --> db
-    db --> ui["web UI / API :8765"]
 
     db --> reg["per-plate vehicle registry"]
     reg --> grp["plate grouping & merges (OCR + appearance)"]
     reid --> uid["Unidentified queue: cluster plateless cars"]
-    reg --> ev["confirmed-speeder evidence export (zip/csv)"]
+    reg --> ev["rule-derived repeat-offender evidence"]
+    ev --> rpt["council report (PDF) + ZIP/CSV export"]
+
+    %% ── Web UI: humans, behind Google SSO ──
+    db --> ui["web UI / API :8765"]
+    reg --> ui
+    grp --> ui
+    uid --> ui
+    ev --> ui
+    rpt --> ui
+    ui --> sso{{"Google SSO + role allowlist<br/>(readonly · edit · admin)"}}
+    sso --> human(["👤 reviewer (browser)"])
+
+    %% ── MCP: external agent, behind API key ──
+    db --> mcp["MCP server /mcp<br/>road_stats · vehicle_profile · speed_distribution · clip bundle"]
+    ev --> mcp
+    rpt --> mcp
+    mcp --> akey{{"API-key gate<br/>(also guards /frames /clips /exports)"}}
+    akey --> agent(["🤖 Hermes → enriched report"])
 ```
 
 - **Decode:** `ffmpeg -hwaccel d3d11va` (4K HEVC, ~40% less CPU than software decode).
