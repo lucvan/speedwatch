@@ -27,17 +27,20 @@
 </div>
 
 <div class="card mb-4">
-  <div class="card-header small">Connect an MCP client (e.g. Hermes <code>~/.hermes/config.yaml</code>)</div>
+  <div class="card-header small">Connect an MCP client</div>
   <div class="card-body">
-    <pre class="mb-0 small" style="white-space:pre-wrap">mcp_servers:
-  speedwatch:
-    url: "{{ public_base }}{{ mcp_path }}"
-    headers:
-      Authorization: "Bearer &lt;your-key&gt;"</pre>
+    <p class="small text-muted mb-2">
+      Point any MCP client at the endpoint below and pass the key as a bearer token. The exact
+      config shape varies by client; the essentials are:
+    </p>
+    <pre class="mb-0 small" style="white-space:pre-wrap">endpoint:  {{ public_base }}{{ mcp_path }}
+header:    Authorization: Bearer &lt;your-key&gt;</pre>
     <div class="small text-muted mt-2">
-      <code>{{ public_base }}</code> is how the agent reaches this host. Hermes runs in Docker on
-      this machine, so <code>host.docker.internal</code> resolves to the host. Override with the
-      <code>MCP_PUBLIC_BASE_URL</code> env var if needed (e.g. a tailnet address).
+      The endpoint host is whatever address the <em>client</em> uses to reach this server — set it
+      with <code>MCP_PUBLIC_BASE_URL</code> (currently <code>{{ public_base }}</code>). A client on
+      this host uses <code>localhost</code>; from another machine, this host's LAN / tunnel address;
+      from a container on this host, <code>host.docker.internal</code>. The same key also authorises
+      the media routes, so the image and clip URLs returned by the tools are fetchable with it.
     </div>
   </div>
 </div>

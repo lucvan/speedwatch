@@ -160,10 +160,12 @@ AUTH_ENABLED = bool(GOOGLE_CLIENT_ID)
 # Gated by API keys (managed at /keys); the same key also authorises the media + export
 # routes so the agent can fetch the images/clips a tool points it at.
 MCP_ENABLED = os.getenv("MCP_ENABLED", "1") not in ("0", "false", "False", "")
-# Base URL the CONSUMER uses to reach this host for media/clip downloads embedded in tool
-# responses. Hermes runs in Docker on the same host and reaches it via host.docker.internal.
+# Base URL the CONSUMER (the MCP client) uses to reach this host for the media/clip URLs embedded
+# in tool responses. Defaults to localhost (client on this host); override for other setups — e.g.
+# a LAN/tunnel address for a remote client, or http://host.docker.internal:<port> for a client
+# running in a container on this host.
 MCP_PUBLIC_BASE_URL = os.getenv(
-    "MCP_PUBLIC_BASE_URL", f"http://host.docker.internal:{PORT}"
+    "MCP_PUBLIC_BASE_URL", f"http://localhost:{PORT}"
 ).rstrip("/")
 
 # Per-stage timing profiler — logs avg ms per pipeline stage every PROFILE_FLUSH_S seconds.
