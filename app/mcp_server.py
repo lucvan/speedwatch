@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import config, db
 from . import stats as stats_mod
@@ -36,6 +37,11 @@ mcp = FastMCP(
     instructions=_INSTRUCTIONS,
     stateless_http=True,
     streamable_http_path="/",
+    # FastMCP's DNS-rebinding protection validates the request Host header against allowed_hosts
+    # and 421s anything else. This endpoint is reached under several host names (host.docker.internal
+    # from Hermes-in-Docker, localhost, the LAN IP, speedwatch.e49ta.com), and the real auth boundary
+    # is the API-key gate (app/apikey.py) — so we disable Host validation rather than enumerate hosts.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
