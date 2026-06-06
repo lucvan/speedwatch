@@ -26,3 +26,8 @@ fast-alpr>=0.4.0
 authlib>=1.3.0
 httpx>=0.27.0
 itsdangerous>=2.1.0
+# MCP server (exposes evidence data to an external agent, e.g. Hermes). Pin starlette <0.42
+# so fastapi 0.115.5 stays satisfied — mcp will otherwise pull starlette 1.x and break FastAPI.
+mcp>=1.27.0
+starlette<0.42
+sse-starlette<3.1

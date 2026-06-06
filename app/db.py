@@ -4,7 +4,9 @@ Tables: calibration, pass_session, pass.
 """
 from __future__ import annotations
 import aiosqlite
+import hashlib
 import json
+import secrets
 import time
 from pathlib import Path
 
@@ -119,6 +121,21 @@ CREATE TABLE IF NOT EXISTS app_user (
     created_at REAL NOT NULL,
     last_login REAL
 );
+
+-- API keys for machine-to-machine access to the MCP server + the media/export routes
+-- (so an external agent like Hermes can pull evidence data and fetch images/clips). Only
+-- the SHA-256 hash is stored; the raw key is shown once at creation and never again.
+CREATE TABLE IF NOT EXISTS api_key (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,            -- human label ("hermes")
+    key_hash   TEXT NOT NULL UNIQUE,     -- sha256(raw key)
+    prefix     TEXT NOT NULL,            -- first chars of the raw key, for display
+    created_by TEXT,                     -- admin email
+    created_at REAL NOT NULL,
+    last_used  REAL,
+    revoked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_api_key_hash ON api_key(key_hash);
 """
 
 
@@ -271,6 +288,61 @@ async def touch_last_login(email: str, name: str | None = None) -> None:
             "UPDATE app_user SET last_login=?, name=COALESCE(?, name) WHERE email=?",
             (time.time(), name, email.strip().lower()),
         )
+        await conn.commit()
+
+
+# ── API keys (MCP + media access for external agents) ────────────────────────
+
+def _hash_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def create_api_key(name: str, created_by: str | None = None) -> str:
+    """Mint a new API key. Returns the RAW key (shown once); only its hash is stored."""
+    raw = "sw_" + secrets.token_urlsafe(32)
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO api_key (name, key_hash, prefix, created_by, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (name.strip() or "unnamed", _hash_key(raw), raw[:11], created_by, time.time()),
+        )
+        await conn.commit()
+    return raw
+
+
+async def list_api_keys() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT id, name, prefix, created_by, created_at, last_used, revoked "
+            "FROM api_key ORDER BY revoked, created_at DESC"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def verify_api_key(raw: str | None) -> dict | None:
+    """Return the (non-revoked) key record matching `raw`, or None. Does NOT touch last_used
+    (call touch_api_key for that) so per-image media fetches don't each write to the DB."""
+    if not raw:
+        return None
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT * FROM api_key WHERE key_hash=? AND revoked=0", (_hash_key(raw),)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def touch_api_key(key_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE api_key SET last_used=? WHERE id=?", (time.time(), key_id))
+        await conn.commit()
+
+
+async def revoke_api_key(key_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE api_key SET revoked=1 WHERE id=?", (key_id,))
         await conn.commit()
 
 
@@ -902,41 +974,98 @@ async def set_vehicle_confirmed(plate: str, confirmed: bool) -> None:
         await conn.commit()
 
 
-# A pass is evidence if it was flagged directly, OR its (canonical) vehicle is flagged.
-_EVIDENCE_WHERE = """
-    p.confirmed_speeder = 1
-    OR EXISTS (
-        SELECT 1 FROM vehicle v
-        WHERE v.plate = COALESCE((SELECT canonical FROM plate_alias WHERE alias = p.plate), p.plate)
-          AND v.confirmed_speeder = 1
+# Evidence is rule-derived, not hand-curated. A vehicle is an "offender" if it has at least
+# REPORT_REPEAT_MIN_OVER passes recorded OVER the legal limit, OR it was manually flagged
+# (vehicle.confirmed_speeder). A pass counts as evidence if it belongs to an offender vehicle
+# — resolved through the SAME effective-plate logic as the rest of the app (`_EFF`), so a
+# manually-assigned plateless/mis-read pass is included, not silently dropped — OR it was
+# flagged directly (per-pass override). In all cases it must clear the evidence noise floor
+# (a crawl past the camera is not dangerous-driving evidence) and not be a reviewer-rejected
+# detection (`user_label='sw_wrong'`, the suppress path for glitches). This mirrors the
+# council report's offender rule exactly, so the export, the evidence page, and the report
+# can never disagree.
+
+# Passes the reviewer marked as a bogus detection are excluded from every evidence path.
+_NOT_REJECTED = "(p.user_label IS NULL OR p.user_label <> 'sw_wrong')"
+
+
+async def _offender_plates(conn, limit_mph: float, min_over: int) -> set[str]:
+    """Effective plates that qualify as offenders: auto (>= min_over non-rejected passes over
+    the limit) plus any vehicle manually flagged as a confirmed speeder."""
+    cur = await conn.execute(
+        f"""SELECT {_EFF} AS plate, COUNT(*) AS over_cnt
+            FROM pass p
+            WHERE {_EFF} IS NOT NULL AND {_EFF} <> '' AND {_NOT_REJECTED}
+              AND COALESCE(p.user_corrected_mph, p.sw_speed_mph) > ?
+            GROUP BY {_EFF}
+            HAVING over_cnt >= ?""",
+        (limit_mph, min_over),
     )
-"""
+    plates = {r[0] for r in await cur.fetchall()}
+    cur = await conn.execute("SELECT plate FROM vehicle WHERE confirmed_speeder = 1")
+    plates |= {r[0] for r in await cur.fetchall()}
+    return plates
+
+
+async def _evidence_pass_rows(conn) -> list[dict]:
+    """Single source of truth for evidence passes — shared by the evidence page, the export,
+    and the dashboard counter so they can never disagree. Newest first."""
+    conn.row_factory = aiosqlite.Row
+    offenders = await _offender_plates(conn, config.SPEED_LIMIT_MPH, config.REPORT_REPEAT_MIN_OVER)
+    cur = await conn.execute(
+        f"""SELECT p.*, s.start_ts, s.camera, s.clip_path AS session_clip_path,
+                   {_EFF} AS canonical_plate,
+                   p.confirmed_speeder AS pass_confirmed
+            FROM pass p JOIN pass_session s ON s.id = p.session_id
+            WHERE {_NOT_REJECTED}
+              AND COALESCE(p.user_corrected_mph, p.sw_speed_mph) >= ?
+            ORDER BY s.start_ts DESC""",
+        (config.EVIDENCE_MIN_MPH,),
+    )
+    rows = [dict(r) for r in await cur.fetchall()]
+    # A pass is evidence if its (effective) vehicle is an offender, or it was flagged directly.
+    return [r for r in rows if r["pass_confirmed"] or (r["canonical_plate"] in offenders)]
 
 
 async def list_evidence_passes() -> list[dict]:
-    """All passes that count as confirmed-speeder evidence, newest first, with the data
-    needed for display and for the export bundle."""
+    """All passes that count as evidence, newest first, with the data needed for display and
+    for the export bundle."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        return await _evidence_pass_rows(conn)
+
+
+async def count_evidence_passes() -> int:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        return len(await _evidence_pass_rows(conn))
+
+
+async def passes_for_export(pass_ids: list[int] | None = None,
+                            plates: list[str] | None = None) -> list[dict]:
+    """Passes matching the given pass ids and/or (canonical) plates — for building an on-demand
+    clip bundle. Plates are matched on the effective plate, so merged/assigned passes resolve
+    correctly. Returns the same row shape the evidence export builders expect. Newest first."""
+    conds, params = [], []
+    if pass_ids:
+        conds.append(f"p.id IN ({','.join('?' for _ in pass_ids)})")
+        params += list(pass_ids)
+    if plates:
+        ups = [p.strip().upper() for p in plates if p and p.strip()]
+        if ups:
+            conds.append(f"{_EFF} IN ({','.join('?' for _ in ups)})")
+            params += ups
+    if not conds:
+        return []
     sql = f"""
         SELECT p.*, s.start_ts, s.camera, s.clip_path AS session_clip_path,
-               COALESCE((SELECT canonical FROM plate_alias WHERE alias = p.plate), p.plate) AS canonical_plate,
-               p.confirmed_speeder AS pass_confirmed
-        FROM pass p
-        JOIN pass_session s ON s.id = p.session_id
-        WHERE {_EVIDENCE_WHERE}
+               {_EFF} AS canonical_plate
+        FROM pass p JOIN pass_session s ON s.id = p.session_id
+        WHERE {' OR '.join(conds)}
         ORDER BY s.start_ts DESC
     """
     async with aiosqlite.connect(DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
-        cur = await conn.execute(sql)
+        cur = await conn.execute(sql, params)
         return [dict(r) for r in await cur.fetchall()]
-
-
-async def count_evidence_passes() -> int:
-    sql = f"SELECT COUNT(*) FROM pass p WHERE {_EVIDENCE_WHERE}"
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cur = await conn.execute(sql)
-        row = await cur.fetchone()
-        return row[0] if row else 0
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
@@ -965,8 +1094,7 @@ async def dashboard_stats(since_ts: float, warn_mph: float, limit_mph: float) ->
             f"SELECT COUNT(*) FROM ( {_VEHICLE_STATS_SQL} )")
         confirmed_veh  = await scalar(
             "SELECT COUNT(*) FROM vehicle WHERE confirmed_speeder = 1")
-        evidence_total = await scalar(
-            f"SELECT COUNT(*) FROM pass p WHERE {_EVIDENCE_WHERE}")
+        evidence_total = len(await _evidence_pass_rows(conn))
         # Work queues
         plateless      = await scalar(
             f"SELECT COUNT(*) FROM pass p WHERE {_EFF} IS NULL OR {_EFF} = ''")
@@ -999,6 +1127,21 @@ async def all_pass_speeds() -> list[float]:
             "WHERE sw_speed_mph IS NOT NULL"
         )
         return [r[0] for r in await cur.fetchall() if r[0] is not None]
+
+
+async def vehicle_over_limit_counts(limit_mph: float) -> dict[str, int]:
+    """{canonical_plate: number of its passes measured over `limit_mph`}. One query, used by
+    the council report to auto-select repeat offenders without a per-vehicle round trip."""
+    sql = f"""
+        SELECT {_EFF} AS plate, COUNT(*) AS over_cnt
+        FROM pass p JOIN pass_session s ON s.id = p.session_id
+        WHERE {_EFF} IS NOT NULL AND {_EFF} <> '' AND {_NOT_REJECTED}
+          AND COALESCE(p.user_corrected_mph, p.sw_speed_mph) > ?
+        GROUP BY {_EFF}
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute(sql, (limit_mph,))
+        return {r[0]: r[1] for r in await cur.fetchall()}
 
 
 async def recent_fast_passes(limit: int = 8) -> list[dict]:

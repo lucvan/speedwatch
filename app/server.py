@@ -33,6 +33,7 @@ from . import embed as embed_mod
 from . import vehicles as vehicles_mod
 from . import anpr_mask as anpr_mask_mod
 from . import stats as stats_mod
+from . import report as report_mod
 
 log = logging.getLogger(__name__)
 
@@ -43,11 +44,15 @@ _TEMPLATES_DIR = _WEB_DIR / "templates"
 _STATIC_DIR   = _WEB_DIR / "static"
 _FRAMES_DIR   = Path(config.DATA_DIR) / "frames"
 _CLIPS_DIR    = Path(config.DATA_DIR) / "clips"
+_EXPORTS_DIR  = Path(config.DATA_DIR) / "exports"
+for _d in (_FRAMES_DIR, _CLIPS_DIR, _EXPORTS_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.mount("/static",  StaticFiles(directory=str(_STATIC_DIR)),  name="static")
 app.mount("/frames",  StaticFiles(directory=str(_FRAMES_DIR)),  name="frames")
 app.mount("/clips",   StaticFiles(directory=str(_CLIPS_DIR)),   name="clips")
+app.mount("/exports", StaticFiles(directory=str(_EXPORTS_DIR)), name="exports")
 
 # Pipeline status (set by main.py)
 _pipeline_status: str = "starting"
@@ -402,7 +407,18 @@ async def evidence_page(request: Request):
         "request": request,
         "passes": passes,
         "total": len(passes),
+        "evidence_floor": config.EVIDENCE_MIN_MPH,
+        "council": config.REPORT_COUNCIL,
     })
+
+
+@app.get("/evidence/report", response_class=HTMLResponse)
+async def evidence_report(request: Request, refresh: int = 0):
+    """Print-ready council evidence report: road-wide speed profile + per-offender profiles +
+    an AI-assisted narrative. Save-as-PDF from the browser. The narrative is cached on a data
+    signature; ?refresh=1 forces it to be regenerated."""
+    ctx = await report_mod.build_report_context(refresh=bool(refresh))
+    return templates.TemplateResponse("report.html", {"request": request, **ctx})
 
 
 @app.get("/review", response_class=HTMLResponse)
@@ -970,3 +986,40 @@ async def lens_save(camera: str, request: Request):
 # every route defined above. See app/auth.py for the role model.
 from . import auth as _auth  # noqa: E402
 _auth.install(app, templates)
+
+
+# ── MCP server + API-key access (for an external agent, e.g. Hermes) ─────────────
+# Mounts the MCP server at /mcp and installs the API-key gate. The gate is added AFTER the
+# SSO middleware so it ends up outermost and runs first: it requires a key for /mcp and lets a
+# key-bearing agent reach the media/export routes without a browser session. Managed at /keys.
+if config.MCP_ENABLED:
+    from . import mcp_server as _mcp  # noqa: E402
+    from . import apikey as _apikey   # noqa: E402
+    app.mount("/mcp", _mcp.streamable_app())
+    _apikey.install(app)
+
+    @app.get("/keys", response_class=HTMLResponse)
+    async def keys_page(request: Request):
+        keys = await db.list_api_keys()
+        return templates.TemplateResponse("keys.html", {
+            "request": request,
+            "keys": keys,
+            "mcp_path": "/mcp",
+            "public_base": config.MCP_PUBLIC_BASE_URL,
+            "pipeline_status": _pipeline_status,
+        })
+
+    @app.post("/api/keys")
+    async def api_create_key(request: Request, name: str = Form(...)):
+        name = name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="A name is required")
+        actor = _auth.current_user(request)
+        raw = await db.create_api_key(name, created_by=actor["email"] if actor else None)
+        # Returned ONCE — the raw key is never recoverable after this response.
+        return JSONResponse({"ok": True, "name": name, "key": raw})
+
+    @app.post("/api/keys/revoke")
+    async def api_revoke_key(request: Request, key_id: int = Form(...)):
+        await db.revoke_api_key(key_id)
+        return JSONResponse({"ok": True})

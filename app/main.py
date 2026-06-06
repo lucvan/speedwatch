@@ -211,8 +211,16 @@ async def _startup():
 async def _lifespan(application: FastAPI):
     global _main_loop
     _main_loop = asyncio.get_event_loop()
-    await _startup()
-    yield
+    async with contextlib.AsyncExitStack() as stack:
+        # The MCP server is mounted as a sub-app; Starlette does not run a mounted app's own
+        # lifespan, so we run its streamable-HTTP session manager from the parent lifespan.
+        if config.MCP_ENABLED:
+            from . import mcp_server as _mcp
+            _mcp.streamable_app()  # ensure the session manager is created
+            await stack.enter_async_context(_mcp.session_manager_lifespan())
+            log.info("MCP server mounted at /mcp")
+        await _startup()
+        yield
 
 
 app.router.lifespan_context = _lifespan

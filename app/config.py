@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 
 try:
     from dotenv import load_dotenv
@@ -56,6 +56,27 @@ MIN_DT_SECONDS = float(os.getenv("MIN_DT_SECONDS", "0.3"))
 #   speed > SPEED_LIMIT_MPH           → red    (over the legal limit)
 SPEED_LIMIT_MPH = float(os.getenv("SPEED_LIMIT_MPH", "20"))
 SPEED_WARN_MPH  = float(os.getenv("SPEED_WARN_MPH",  "16"))
+
+# ── Evidence & council report ──────────────────────────────────────────────────
+# Noise floor for evidence: passes below this measured speed are dropped from the
+# confirmed-speeder export AND the council report entirely. A crawl past the camera is
+# not evidence of dangerous driving; the report's credibility rests on a clean floor.
+EVIDENCE_MIN_MPH = float(os.getenv("EVIDENCE_MIN_MPH", "17"))
+# A vehicle is auto-classed a "repeat offender" in the report if it has at least this many
+# passes recorded OVER the legal limit (on top of any vehicle you manually flag as a
+# confirmed speeder). This is what makes the "a few drivers regularly exceed" argument
+# from the data rather than by hand-picking.
+REPORT_REPEAT_MIN_OVER = int(os.getenv("REPORT_REPEAT_MIN_OVER", "2"))
+# Identity for the generated report.
+REPORT_ROAD_NAME = os.getenv("REPORT_ROAD_NAME", "the road")
+REPORT_COUNCIL   = os.getenv("REPORT_COUNCIL",   "Waltham Forest Council")
+REPORT_AUTHOR    = os.getenv("REPORT_AUTHOR",    "")
+REPORT_LOCATION  = os.getenv("REPORT_LOCATION",  "")  # e.g. "London E17"
+# Narrative generation uses a LOCAL Ollama text model (no data leaves the box). Falls back
+# to a deterministic, figures-grounded template if Ollama is unavailable or errors.
+REPORT_LLM_MODEL   = os.getenv("REPORT_LLM_MODEL",   "qwen2.5:14b")
+REPORT_LLM_TIMEOUT = float(os.getenv("REPORT_LLM_TIMEOUT", "120"))
+REPORT_LLM_ENABLED = os.getenv("REPORT_LLM_ENABLED", "1") not in ("0", "false", "False", "")
 
 # ANPR / number-plate recognition (fast-alpr). Runs on CPU (tiny models) so it does not
 # contend with YOLO on DML. Applied to the entry + exit car crop of each qualifying pass;
@@ -131,6 +152,19 @@ BOOTSTRAP_ADMIN      = os.getenv("BOOTSTRAP_ADMIN", "").strip().lower()
 SESSION_MAX_AGE      = int(os.getenv("SESSION_MAX_AGE", str(30 * 24 * 3600)))
 
 AUTH_ENABLED = bool(GOOGLE_CLIENT_ID)
+
+# ── MCP server (expose evidence data to an external agent, e.g. Hermes) ─────────
+# Mounts a Model Context Protocol server at /mcp so another agent can pull road stats,
+# vehicle profiles, pass detail, distribution charts, and request clip bundles to author
+# enriched council reports. SpeedWatch stays the source of truth for the measured figures.
+# Gated by API keys (managed at /keys); the same key also authorises the media + export
+# routes so the agent can fetch the images/clips a tool points it at.
+MCP_ENABLED = os.getenv("MCP_ENABLED", "1") not in ("0", "false", "False", "")
+# Base URL the CONSUMER uses to reach this host for media/clip downloads embedded in tool
+# responses. Hermes runs in Docker on the same host and reaches it via host.docker.internal.
+MCP_PUBLIC_BASE_URL = os.getenv(
+    "MCP_PUBLIC_BASE_URL", f"http://host.docker.internal:{PORT}"
+).rstrip("/")
 
 # Per-stage timing profiler — logs avg ms per pipeline stage every PROFILE_FLUSH_S seconds.
 # Zero overhead when off. Turn on temporarily to find CPU hot spots.

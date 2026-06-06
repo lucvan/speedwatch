@@ -64,6 +64,34 @@ def _histogram(values: list[float], lo: float, hi: float, bins: int) -> list[int
     return counts
 
 
+def _kde(values: list[float], xs: list[float], bandwidth: float) -> list[float]:
+    """Gaussian kernel density estimate of `values`, evaluated at each point in `xs`."""
+    n = len(values)
+    if n == 0 or bandwidth <= 0:
+        return [0.0] * len(xs)
+    norm = 1.0 / (n * bandwidth * math.sqrt(2 * math.pi))
+    out = []
+    for x in xs:
+        acc = 0.0
+        for v in values:
+            z = (x - v) / bandwidth
+            acc += math.exp(-0.5 * z * z)
+        out.append(norm * acc)
+    return out
+
+
+def _bandwidth(values: list[float]) -> float:
+    """Silverman-ish KDE bandwidth with a 1 mph floor so a few passes don't render needle-thin."""
+    n = len(values)
+    if n < 2:
+        return 1.5
+    m = sum(values) / n
+    sd = (sum((v - m) ** 2 for v in values) / n) ** 0.5
+    if sd <= 0:
+        return 1.5
+    return max(1.0, 0.9 * sd * n ** (-0.2))
+
+
 def _nice_ceil(x: float) -> float:
     """Round up to a tidy axis maximum (nearest 5, then 10 for larger values)."""
     if x <= 0:
@@ -81,6 +109,8 @@ def speed_summary(values, warn: float | None = None, limit: float | None = None)
     over = sum(1 for v in vals if limit is not None and v > limit)
     return {
         "n": n,
+        "min": round(vals[0], 1),
+        "mean": round(sum(vals) / n, 1),
         "median": round(percentile(vals, 50), 1),
         "p85": round(percentile(vals, 85), 1),   # classic traffic-engineering metric
         "p95": round(percentile(vals, 95), 1),
@@ -188,20 +218,36 @@ def speed_distribution_svg(
         parts.append(f'<text x="{x:.1f}" y="{mt - 3:.1f}" fill="{colour}" font-size="10" '
                      f'text-anchor="middle">{html.escape(str(label))}</text>')
 
-    # Overlay one vehicle's passes: ticks on the baseline + a median line.
+    # Overlay one vehicle's own pass distribution: a filled density (KDE) curve showing the
+    # shape of their speeds, the individual passes as ticks, and a median line. Drawn in a
+    # distinct colour (violet) so it reads clearly against the band-coloured road bars + curve.
     if hl:
+        HL = "#a371f7"
+        npts = 96
+        xs = [top * i / (npts - 1) for i in range(npts)]
+        dens = _kde(hl, xs, _bandwidth(hl))
+        dmax = max(dens) or 1.0
+        scale = (0.82 * ph) / dmax
+        curve = [(x_of(x), base_y - d * scale) for x, d in zip(xs, dens)]
+        area = (f"{ml:.1f},{base_y:.1f} "
+                + " ".join(f"{x:.1f},{y:.1f}" for x, y in curve)
+                + f" {ml + pw:.1f},{base_y:.1f}")
+        parts.append(f'<polygon points="{area}" fill="{HL}" opacity="0.20"/>')
+        parts.append(f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in curve)}" '
+                     f'fill="none" stroke="{HL}" stroke-width="2"/>')
+        # Individual passes as ticks straddling the baseline.
         for v in hl:
             if v > top:
                 continue
             x = x_of(v)
-            parts.append(f'<line x1="{x:.1f}" y1="{base_y - 7:.1f}" x2="{x:.1f}" y2="{base_y + 4:.1f}" '
-                         f'stroke="#4fc3f7" stroke-width="2" opacity="0.95"/>')
+            parts.append(f'<line x1="{x:.1f}" y1="{base_y - 8:.1f}" x2="{x:.1f}" y2="{base_y + 4:.1f}" '
+                         f'stroke="{HL}" stroke-width="2" opacity="0.95"/>')
         hmed = percentile(hl, 50)
         if hmed is not None and hmed <= top:
             x = x_of(hmed)
             parts.append(f'<line x1="{x:.1f}" y1="{mt}" x2="{x:.1f}" y2="{base_y:.1f}" '
-                         f'stroke="#4fc3f7" stroke-width="2"/>')
-            parts.append(f'<text x="{x:.1f}" y="{mt + 9:.1f}" fill="#4fc3f7" font-size="10" '
+                         f'stroke="{HL}" stroke-width="2" stroke-dasharray="2 2"/>')
+            parts.append(f'<text x="{x:.1f}" y="{mt + 9:.1f}" fill="{HL}" font-size="10" '
                          f'text-anchor="middle">{html.escape(highlight_label)}</text>')
 
     # X-axis ticks

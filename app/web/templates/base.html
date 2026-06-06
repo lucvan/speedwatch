@@ -224,6 +224,7 @@
     <a href="/settings"     class="{{ 'active' if path.startswith('/settings') }}"><span class="ic">⚙️</span> Settings</a>
     {% if user and user.role == 'admin' %}
     <a href="/users"        class="{{ 'active' if path.startswith('/users') }}"><span class="ic">👥</span> Users</a>
+    <a href="/keys"         class="{{ 'active' if path.startswith('/keys') }}"><span class="ic">🔑</span> API keys</a>
     {% endif %}
   </div>
   <div class="sw-foot">

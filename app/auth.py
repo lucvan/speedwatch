@@ -55,6 +55,8 @@ def required_role(method: str, path: str) -> int:
     """
     if path == "/users" or path.startswith("/users/") or path.startswith("/api/users"):
         return ADMIN
+    if path == "/keys" or path.startswith("/keys/") or path.startswith("/api/keys"):
+        return ADMIN
     if method == "DELETE":
         return ADMIN
     if (path.startswith("/api/calibration")
@@ -105,7 +107,11 @@ class AuthGate:
 
         path = scope["path"]
         state = scope.setdefault("state", {})
-        state["user"] = None
+        state.setdefault("user", None)
+        # A request already authorised by an API key (McpKeyGate, runs before this) bypasses SSO.
+        if state.get("mcp_authed"):
+            await self.app(scope, receive, send)
+            return
         if _is_public(path):
             await self.app(scope, receive, send)
             return

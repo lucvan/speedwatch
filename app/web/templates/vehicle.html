@@ -77,6 +77,37 @@
   </div>
 </div>
 
+<!-- ── Speed vs the road ── -->
+{% if dist_svg and veh_summary %}
+<div class="card mb-4">
+  <div class="card-header small d-flex align-items-center">
+    <span>Speed vs the whole road</span>
+    {% if median_rank is not none %}
+    <span class="ms-auto small text-muted">
+      median <strong class="spd spd-{{ speed_band(veh_summary.median) }}">{{ veh_summary.median }}</strong> mph —
+      faster than <strong>{{ median_rank|round(0)|int }}%</strong> of all passes
+    </span>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    {{ dist_svg|safe }}
+    <div class="d-flex flex-wrap gap-3 small mt-2">
+      <span><span class="text-muted">passes</span> <strong>{{ veh_summary.n }}</strong></span>
+      <span><span class="text-muted">range</span> <strong>{{ veh_summary.min }}–{{ veh_summary.max }}</strong> mph</span>
+      <span><span class="text-muted">mean</span> <strong>{{ veh_summary.mean }}</strong></span>
+      <span><span class="text-muted">median</span> <strong class="spd spd-{{ speed_band(veh_summary.median) }}">{{ veh_summary.median }}</strong></span>
+      <span><span class="text-muted">85th&nbsp;%ile</span> <strong class="spd spd-{{ speed_band(veh_summary.p85) }}">{{ veh_summary.p85 }}</strong></span>
+      {% if veh_summary.over_limit %}<span><span class="text-muted">over limit</span> <strong class="spd-over">{{ veh_summary.over_limit }}</strong></span>{% endif %}
+    </div>
+    <div class="small text-muted mt-1">
+      Background bars + blue curve are <em>all</em> passes on the road; the
+      <span style="color:#a371f7">violet curve</span> is this vehicle's own speed distribution,
+      with <span style="color:#a371f7">ticks</span> for each pass and a dashed line at its median.
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- ── Identity / grouping ── -->
 <div class="card mb-4">
   <div class="card-header small">Identity &amp; grouping <span class="text-muted">— fix OCR splits and group the same car</span></div>
@@ -157,29 +188,6 @@
     <div id="recompute-result" class="mt-2 small" style="display:none"></div>
   </div>
 </div>
-
-<!-- ── Speed vs the road ── -->
-{% if dist_svg and veh_summary %}
-<div class="card mb-4">
-  <div class="card-header small d-flex align-items-center">
-    <span>Speed vs the whole road</span>
-    {% if median_rank is not none %}
-    <span class="ms-auto small text-muted">
-      median <strong class="spd spd-{{ speed_band(veh_summary.median) }}">{{ veh_summary.median }}</strong> mph —
-      faster than <strong>{{ median_rank|round(0)|int }}%</strong> of all passes
-    </span>
-    {% endif %}
-  </div>
-  <div class="card-body">
-    {{ dist_svg|safe }}
-    <div class="small text-muted mt-1">
-      Background bars/curve are <em>all</em> passes on the road; the
-      <span style="color:#4fc3f7">blue ticks</span> are this vehicle's passes, with the solid
-      blue line at its median. This vehicle's 85th&nbsp;%ile is {{ veh_summary.p85 }} mph; top {{ veh_summary.max }} mph.
-    </div>
-  </div>
-</div>
-{% endif %}
 
 <h6 class="mb-2">Passes ({{ passes|length }})</h6>
 <div class="table-responsive">

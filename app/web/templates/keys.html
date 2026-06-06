@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}API keys — Speedwatch{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <h4 class="mb-0">API keys</h4>
+  <span class="text-muted small">Machine access to the MCP server + media/clip routes (for an agent like Hermes)</span>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header small">Create a key</div>
+  <div class="card-body">
+    <form id="add-form" class="row g-2 align-items-end">
+      <div class="col-12 col-md-6">
+        <label class="form-label small mb-1">Name (what it's for)</label>
+        <input type="text" name="name" class="form-control" placeholder="hermes" required>
+      </div>
+      <div class="col-12 col-md-3">
+        <button type="submit" class="btn btn-primary w-100">Create key</button>
+      </div>
+    </form>
+    <div id="new-key" class="alert alert-success mt-3 d-none">
+      <div class="small mb-1"><b>Copy this key now — it is shown only once.</b></div>
+      <code id="new-key-val" class="user-select-all" style="word-break:break-all"></code>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header small">Connect an MCP client (e.g. Hermes <code>~/.hermes/config.yaml</code>)</div>
+  <div class="card-body">
+    <pre class="mb-0 small" style="white-space:pre-wrap">mcp_servers:
+  speedwatch:
+    url: "{{ public_base }}{{ mcp_path }}"
+    headers:
+      Authorization: "Bearer &lt;your-key&gt;"</pre>
+    <div class="small text-muted mt-2">
+      <code>{{ public_base }}</code> is how the agent reaches this host. Hermes runs in Docker on
+      this machine, so <code>host.docker.internal</code> resolves to the host. Override with the
+      <code>MCP_PUBLIC_BASE_URL</code> env var if needed (e.g. a tailnet address).
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header small">{{ keys|length }} key{{ '' if keys|length == 1 else 's' }}</div>
+  <div class="card-body p-0">
+    <table class="table table-hover mb-0 align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>Name</th>
+          <th style="width:160px">Prefix</th>
+          <th style="width:130px">Created</th>
+          <th style="width:130px">Last used</th>
+          <th style="width:90px">Status</th>
+          <th style="width:90px" class="text-end">Revoke</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for k in keys %}
+        <tr data-id="{{ k.id }}" class="{{ 'text-muted' if k.revoked }}">
+          <td>{{ k.name }}</td>
+          <td><code class="small">{{ k.prefix }}…</code></td>
+          <td class="small text-muted">{{ fmt_ago(k.created_at) if k.created_at else '—' }}</td>
+          <td class="small text-muted">{{ fmt_ago(k.last_used) if k.last_used else 'never' }}</td>
+          <td>
+            {% if k.revoked %}<span class="badge bg-secondary">revoked</span>
+            {% else %}<span class="badge bg-success">active</span>{% endif %}
+          </td>
+          <td class="text-end">
+            {% if not k.revoked %}
+            <button class="btn btn-sm btn-outline-danger revoke-btn" title="Revoke">✕</button>
+            {% else %}<span class="text-muted small">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div id="msg" class="small mt-2"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const msg = document.getElementById('msg');
+function flash(text, ok) {
+  msg.textContent = text;
+  msg.style.color = ok ? '#5fd38a' : '#ff6b6b';
+}
+async function post(url, data) {
+  const body = new URLSearchParams(data);
+  const r = await fetch(url, { method: 'POST', body });
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+  return j;
+}
+
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const j = await post('/api/keys', { name: f.name.value.trim() });
+    const box = document.getElementById('new-key');
+    document.getElementById('new-key-val').textContent = j.key;
+    box.classList.remove('d-none');
+    f.reset();
+    flash('Key created — copy it now, then reload to see it listed.', true);
+  } catch (err) { flash(err.message, false); }
+});
+
+document.querySelectorAll('.revoke-btn').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    const id = e.target.closest('tr').dataset.id;
+    if (!confirm('Revoke this key? Any client using it loses access immediately.')) return;
+    try {
+      await post('/api/keys/revoke', { key_id: id });
+      location.reload();
+    } catch (err) { flash(err.message, false); }
+  });
+});
+</script>
+{% endblock %}
